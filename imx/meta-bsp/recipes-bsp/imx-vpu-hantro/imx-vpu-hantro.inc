@@ -12,6 +12,7 @@ PROVIDES = "virtual/imxvpu"
 RPROVIDES_${PN} = "virtual/imxvpu"
 
 SRC_URI = "${FSL_MIRROR}/${PN}-${PV}.bin;fsl-eula=true \
+           file://0001-MMIOT-418-Allow-to-configure-CFG_SECURE_DATA_PATH-on.patch \
 "
 
 PLATFORM_mx8mm = "IMX8MM"
