@@ -8,6 +8,7 @@ SECTION = "multimedia"
 LIC_FILES_CHKSUM = "file://COPYING;md5=72c0f70181bb6e83eee6aab8de12a9f3"
 
 SRC_URI = "${FSL_MIRROR}/${PN}-${PV}.bin;fsl-eula=true"
+#DRM_PATCH
 S = "${WORKDIR}/${PN}-${PV}"
 
 SRC_URI[md5sum] = "c1c23d2524d0b48c26c14cf48bfb38e1"
