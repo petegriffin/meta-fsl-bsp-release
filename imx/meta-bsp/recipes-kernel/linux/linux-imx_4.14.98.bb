@@ -8,6 +8,7 @@ i.MX Family Reference Boards. It includes support for many IPs such as GPU, VPU 
 
 require recipes-kernel/linux/linux-imx.inc
 require linux-imx-src-${PV}.inc
+#DRM_PATCH
 
 SRC_URI += "file://secure_vpu.cfg"
 
