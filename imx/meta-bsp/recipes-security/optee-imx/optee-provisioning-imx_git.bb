@@ -20,6 +20,15 @@ TARGET_CC_ARCH += "${LDFLAGS}"
 
 S = "${WORKDIR}/git"
 
+do_configure() {
+    if [ ${DEFAULTTUNE} = "aarch64" ];then
+        export TA_DEV_KIT_DIR=${STAGING_INCDIR}/optee/export-user_ta_arm64/
+    else
+        export TA_DEV_KIT_DIR=${STAGING_INCDIR}/optee/export-user_ta_arm32/
+    fi
+    export ARCH=${DEFAULTTUNE}
+}
+
 do_compile () {
     if [ ${DEFAULTTUNE} = "aarch64" ];then
         export TA_DEV_KIT_DIR=${STAGING_INCDIR}/optee/export-user_ta_arm64/
@@ -40,16 +49,15 @@ do_compile () {
 
 do_install () {
     install -d ${D}/lib/optee_armtz
-    echo "INSTALL provisioning TA from ${WORKDIR}" 
+    echo "INSTALL provisioning TA"
     find ${S}/ta -name '*.ta' | while read name; do
     install -m 444 $name ${D}/lib/optee_armtz/
+    done
 
-    echo "INSTALL user space provisioning application from ${WORKDIR}"
+    echo "INSTALL user space provisioning application"
     install -d ${D}${bindir}
     install -m 0755 ${S}/host/optee-provisioning-imx ${D}${bindir}/
-
-    done
 }
 
 #FILES_SOLIBSDEV = ""
-FILES_${PN} = "/lib*/optee_armtz/ ${bindir}/optee-provisioning-imx"
+FILES_${PN} = "/lib/optee_armtz/ ${bindir}/optee-provisioning-imx"
