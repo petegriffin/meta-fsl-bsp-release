@@ -58,7 +58,10 @@ do_install () {
     echo "INSTALL user space provisioning application"
     install -d ${D}${bindir}
     install -m 0755 ${S}/host/optee-provisioning-imx ${D}${bindir}/
+
+    echo "Create folder to store wrapped keybox"
+    install -d ${D}/data/vendor/mediadrm
 }
 
 #FILES_SOLIBSDEV = ""
-FILES_${PN} = "/lib/optee_armtz/ ${bindir}/optee-provisioning-imx"
+FILES_${PN} = "/lib/optee_armtz/ ${bindir}/optee-provisioning-imx /data/vendor/mediadrm"
