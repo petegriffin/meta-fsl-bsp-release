@@ -13,8 +13,6 @@
 
 
 echo 30000 >  /proc/sys/vm/min_free_kbytes
-export WAYLAND_DISPLAY=wayland-0
-export LD_PRELOAD="/usr/lib/liboemcrypto.so /usr/lib/libwidevine_ce_cdm_shared.so"
 
 exit 0
 
