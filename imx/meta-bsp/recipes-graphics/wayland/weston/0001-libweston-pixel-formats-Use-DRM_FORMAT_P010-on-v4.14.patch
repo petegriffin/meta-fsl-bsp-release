@@ -1,0 +1,28 @@
+From 68b008f175b023a49be6c5461255386f17560500 Mon Sep 17 00:00:00 2001
+From: Peter Griffin <peter.griffin@linaro.org>
+Date: Thu, 6 Aug 2020 15:28:24 +0100
+Subject: [PATCH] libweston: pixel-formats: Use DRM_FORMAT_P010 on v4.14 kernel
+
+Signed-off-by: Peter Griffin <peter.griffin@linaro.org>
+---
+ libweston/pixel-formats.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libweston/pixel-formats.c b/libweston/pixel-formats.c
+index a8653d6f..e5ce53a0 100644
+--- a/libweston/pixel-formats.c
++++ b/libweston/pixel-formats.c
+@@ -312,8 +312,8 @@ static const struct pixel_format_info pixel_format_table[] = {
+ 		.vsub = 2,
+ 	},
+ 	{
+-		DRM_FORMAT(NV12_10LE40),
+-		.format = DRM_FORMAT_NV12_10LE40,
++		DRM_FORMAT(P010),
++		.format = DRM_FORMAT_P010,
+ 		.num_planes = 2,
+ 		.hsub = 2,
+ 		.vsub = 2,
+-- 
+2.17.1
+

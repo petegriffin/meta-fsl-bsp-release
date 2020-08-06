@@ -1,0 +1,41 @@
+From f17324f221c27303814a0cc3748c24f3f0e0eddd Mon Sep 17 00:00:00 2001
+From: Peter Griffin <peter.griffin@linaro.org>
+Date: Thu, 6 Aug 2020 15:59:07 +0100
+Subject: [PATCH] backend-drm/drm: remove hdr metadata for v4.14
+
+Signed-off-by: Peter Griffin <peter.griffin@linaro.org>
+---
+ libweston/backend-drm/drm.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/libweston/backend-drm/drm.c b/libweston/backend-drm/drm.c
+index 2323e93b..bfe654a7 100644
+--- a/libweston/backend-drm/drm.c
++++ b/libweston/backend-drm/drm.c
+@@ -3047,13 +3047,13 @@ hdr10_metadata_set_metadata(struct wl_client *client,
+ {
+ 	struct weston_compositor *compositor = wl_resource_get_user_data(resource);
+ 	struct drm_backend *b = to_drm_backend(compositor);
+-	struct hdr_output_metadata hdr_metadata;
++	//struct hdr_output_metadata hdr_metadata;
+ 
+ 	if (eotf == 0) {
+ 		b->clean_hdr_blob = true;
+ 		return;
+ 	}
+-
++#if 0
+ 	hdr_metadata.metadata_type = 0;
+ 	hdr_metadata.hdmi_metadata_type1.eotf = eotf & 0xff;
+ 	hdr_metadata.hdmi_metadata_type1.metadata_type = type & 0xff;
+@@ -3073,6 +3073,7 @@ hdr10_metadata_set_metadata(struct wl_client *client,
+ 	hdr_metadata.hdmi_metadata_type1.max_fall = max_fall & 0xffff;
+ 
+ 	drmModeCreatePropertyBlob(b->drm.fd, &hdr_metadata, sizeof(hdr_metadata), &b->hdr_blob_id);
++#endif
+ }
+ 
+ static const struct zwp_hdr10_metadata_v1_interface hdr10_metadata_interface = {
+-- 
+2.17.1
+

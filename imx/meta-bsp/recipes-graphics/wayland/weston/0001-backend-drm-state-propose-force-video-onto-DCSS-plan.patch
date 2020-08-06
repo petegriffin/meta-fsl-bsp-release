@@ -1,0 +1,56 @@
+From c37c319fce5f1c1ebe86f6f0f0cfecb97d304836 Mon Sep 17 00:00:00 2001
+From: Peter Griffin <peter.griffin@linaro.org>
+Date: Thu, 6 Aug 2020 23:10:26 +0100
+Subject: [PATCH] backend-drm/state-propose: force video onto DCSS plane
+
+Signed-off-by: Peter Griffin <peter.griffin@linaro.org>
+---
+ libweston/backend-drm/state-propose.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/libweston/backend-drm/state-propose.c b/libweston/backend-drm/state-propose.c
+index 6241be23..97d70799 100644
+--- a/libweston/backend-drm/state-propose.c
++++ b/libweston/backend-drm/state-propose.c
+@@ -854,6 +854,7 @@ drm_output_propose_state(struct weston_output *output_base,
+ 		bool force_renderer = false;
+ 		pixman_region32_t clipped_view;
+ 		bool totally_occluded = false;
++		struct linux_dmabuf_buffer *dmabuf = NULL;
+ 
+ 		drm_debug(b, "\t\t\t[view] evaluating view %p for "
+ 		             "output %s (%lu)\n",
+@@ -880,6 +881,21 @@ drm_output_propose_state(struct weston_output *output_base,
+ 			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
+ 			             "(no buffer available)\n", ev);
+ 			force_renderer = true;
++		} else {
++		        struct weston_buffer *buffer = ev->surface->buffer_ref.buffer;
++			dmabuf = linux_dmabuf_buffer_get(buffer->resource);
++			if (dmabuf) {
++				if (dmabuf->attributes.format == DRM_FORMAT_NV12
++					|| dmabuf->attributes.format == DRM_FORMAT_P010
++					|| dmabuf->attributes.format == DRM_FORMAT_YUYV) {
++				  ps = drm_output_prepare_plane_view(state, ev, mode, scanout_state, current_highest_zpos);
++					if (ps)
++						goto next_view;
++					else
++						force_renderer = true;
++				} else
++					force_renderer = true;
++			}
+ 		}
+ 
+ 		/* Ignore views we know to be totally occluded. */
+@@ -932,7 +948,7 @@ drm_output_propose_state(struct weston_output *output_base,
+ 							   scanout_state,
+ 							   current_highest_zpos);
+ 		}
+-
++next_view:
+ 		if (ps) {
+ 			current_highest_zpos = ps->zpos;
+ 			drm_debug(b, "\t\t\t[plane] next zpos to use %"PRIu64"\n",
+-- 
+2.17.1
+
