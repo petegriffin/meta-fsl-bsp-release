@@ -75,6 +75,17 @@ PACKAGECONFIG[remoting] = "-Dremoting=true,-Dremoting=false,gstreamer-1.0"
 # Weston with PAM support
 PACKAGECONFIG[pam] = "-Dpam=true,-Dpam=false,libpam"
 
+SOCNAME       = "none"
+SOCNAME_mx8mq = "8mq"
+SOCNAME_mx8mm = "8mm"
+
+uncomment() {
+    if ! (grep "^#$1" $2); then
+        bbfatal "Commented setting '#$1' not found in file $PWD/$2"
+    fi
+    sed -i -e 's,^#'"$1"','"$1"',g' $2
+}
+
 do_install_append() {
 	# Weston doesn't need the .la files to load modules, so wipe them
 	rm -f ${D}/${libdir}/libweston-${WESTON_MAJOR_VERSION}/*.la
@@ -95,6 +106,30 @@ do_install_append() {
 	if [ "${@bb.utils.contains('PACKAGECONFIG', 'launch', 'yes', 'no', d)}" = "yes" ]; then
 		chmod u+s ${D}${bindir}/weston-launch
 	fi
+
+	if [ "${@bb.utils.filter('BBFILE_COLLECTIONS', 'ivi', d)}" ]; then
+        	WESTON_INI_SRC=${B}/ivi-shell/weston.ini
+    	else
+        	WESTON_INI_SRC=${B}/compositor/weston.ini
+    	fi
+    	
+	WESTON_INI_DEST_DIR=${D}${sysconfdir}/xdg/weston
+    	if [ -z "${@bb.utils.filter('BBFILE_COLLECTIONS', 'aglprofilegraphical', d)}" ]; then
+        	install -d ${WESTON_INI_DEST_DIR}
+        	install -m 0644 ${WESTON_INI_SRC} ${WESTON_INI_DEST_DIR}
+        	cd ${WESTON_INI_DEST_DIR}
+        	case ${SOCNAME} in
+        	8mq)
+            		uncomment "gbm-format=argb8888" weston.ini
+            		uncomment "\\[shell\\]"         weston.ini
+            		uncomment "size=1920x1080"      weston.ini
+            		;;
+        	8mm)
+            		uncomment "use-g2d=1"           weston.ini
+            		;;
+        	esac
+        	cd -
+    	fi
 }
 
 PACKAGES += "${@bb.utils.contains('PACKAGECONFIG', 'xwayland', '${PN}-xwayland', '', d)} \
@@ -102,6 +137,7 @@ PACKAGES += "${@bb.utils.contains('PACKAGECONFIG', 'xwayland', '${PN}-xwayland',
 
 FILES_${PN}-dev += "${libdir}/${BPN}/libexec_weston.so"
 FILES_${PN} = "${bindir}/weston ${bindir}/weston-terminal ${bindir}/weston-info ${bindir}/weston-launch ${bindir}/wcap-decode ${libexecdir} ${libdir}/${BPN}/*.so* ${datadir}"
+FILES_${PN} += "${sysconfdir}/xdg/weston"
 
 FILES_libweston-${WESTON_MAJOR_VERSION} = "${libdir}/lib*${SOLIBS} ${libdir}/libweston-${WESTON_MAJOR_VERSION}/*.so"
 SUMMARY_libweston-${WESTON_MAJOR_VERSION} = "Helper library for implementing 'wayland window managers'."
