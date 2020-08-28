@@ -18,6 +18,8 @@ SRCREV = "${AUTOREV}"
 
 TARGET_CC_ARCH += "${LDFLAGS}"
 
+CFG_RPMB_FS ?= "y"
+
 S = "${WORKDIR}/git"
 
 do_compile () {
@@ -34,6 +36,7 @@ do_compile () {
     export CROSS_COMPILE=${HOST_PREFIX}
     export OPTEE_OPENSSL_EXPORT=${STAGING_INCDIR}/
     export TEEC_EXPORT="${STAGING_DIR_HOST}/usr"
+    export CFG_RPMB_FS=${CFG_RPMB_FS}
     oe_runmake V=1
 }
 

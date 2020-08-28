@@ -32,6 +32,8 @@ OPTEE_ARCH ?= "arm32"
 OPTEE_ARCH_armv7a = "arm32"
 OPTEE_ARCH_aarch64 = "arm64"
 
+CFG_RPMB_FS ?= "y"
+
 # Optee-os can be built for 32 bits and 64 bits at the same time
 # as long as the compilers are correctly defined.
 # For 64bits, CROSS_COMPILE64 must be set
@@ -59,7 +61,7 @@ EXTRA_OEMAKE_append = " ${@bb.utils.contains('DISTRO_FEATURES', 'sdp', \
 do_compile () {
     unset LDFLAGS
     export CFLAGS="${CFLAGS} --sysroot=${STAGING_DIR_HOST}"
-    export CFG_RPMB_FS="y"
+    export CFG_RPMB_FS=${CFG_RPMB_FS}
     #export CFG_RPMB_WRITE_KEY="y"
     #export CFG_RPMB_RESET_FAT="y"
     export CFG_CORE_HEAP_SIZE="262144"
