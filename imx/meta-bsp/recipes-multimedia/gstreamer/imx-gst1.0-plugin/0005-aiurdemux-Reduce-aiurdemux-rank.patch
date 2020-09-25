@@ -1,0 +1,26 @@
+From 69c7511f136b527ff97f2e5f7dea59fccea464c4 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 30 Jan 2020 13:01:24 -0500
+Subject: [PATCH 5/6] aiurdemux: Reduce aiurdemux rank
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ plugins/aiurdemux/aiur.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/plugins/aiurdemux/aiur.c b/plugins/aiurdemux/aiur.c
+index 2a52465..b9ea61b 100755
+--- a/plugins/aiurdemux/aiur.c
++++ b/plugins/aiurdemux/aiur.c
+@@ -47,7 +47,7 @@ plugin_init (GstPlugin * plugin)
+   aiur_register_external_typefinders (plugin);
+   //gst_aiur_stream_cache_get_type ();
+   if (!gst_element_register
+-      (plugin, "aiurdemux", (GST_RANK_PRIMARY+1), GST_TYPE_AIURDEMUX)){
++      (plugin, "aiurdemux", (GST_RANK_PRIMARY-100), GST_TYPE_AIURDEMUX)){
+     return FALSE;
+   }
+   return TRUE;
+-- 
+2.17.1
+

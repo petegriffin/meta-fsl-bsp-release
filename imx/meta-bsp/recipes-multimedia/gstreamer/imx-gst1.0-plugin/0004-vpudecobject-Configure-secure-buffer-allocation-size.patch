@@ -1,0 +1,30 @@
+From 7a8cd2321032040370558ddbb3ba315f0ad3eb6e Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Fri, 14 Feb 2020 09:22:30 -0500
+Subject: [PATCH 4/6] vpudecobject: Configure secure buffer allocation size
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ plugins/vpu/gstvpudecobject.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/vpu/gstvpudecobject.c b/plugins/vpu/gstvpudecobject.c
+index b1d2191..32468fd 100644
+--- a/plugins/vpu/gstvpudecobject.c
++++ b/plugins/vpu/gstvpudecobject.c
+@@ -579,10 +579,11 @@ gst_vpu_dec_object_set_vpu_param (GstVpuDecObject * vpu_dec_object, \
+ 
+ #if ENABLE_SDP
+   open_param->nSecureMode = 1;
++  open_param->nSecureBufferAllocSize = 4*1024*1024; // TODO Avoid hardcoded value.
+ #else
+   open_param->nSecureMode = 0;
+-#endif
+   open_param->nSecureBufferAllocSize = 0;
++#endif
+ 
+   return TRUE;
+ }
+-- 
+2.17.1
+

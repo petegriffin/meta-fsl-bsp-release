@@ -1,0 +1,32 @@
+From 98447fe743f61c4abe1ad69a8af341700e265c99 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 9 Jan 2020 11:50:36 -0500
+Subject: [PATCH 2/6] vpudec: Request byte-stream format for H264
+
+In secure mode, the stream shall be converted to byte-stream format before
+the decryption.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ plugins/vpu/gstvpu.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/plugins/vpu/gstvpu.h b/plugins/vpu/gstvpu.h
+index f674e3a..461e4d6 100755
+--- a/plugins/vpu/gstvpu.h
++++ b/plugins/vpu/gstvpu.h
+@@ -45,7 +45,11 @@ static VPUMapper vpu_mappers[] = {
+   {VPU_V_VP9, "video/x-vp9"},
+   {VPU_V_VP8, "video/x-vp8"},
+   {VPU_V_VP6, "video/x-vp6-flash"},
++#if ENABLE_SDP
++  {VPU_V_AVC, "video/x-h264, stream-format=(string)byte-stream"},
++#else
+   {VPU_V_AVC, "video/x-h264"},
++#endif
+   {VPU_V_MPEG2, "video/mpeg, systemstream=(boolean)false, mpegversion=(int){1,2}"},
+   {VPU_V_MPEG4, "video/mpeg, mpegversion=(int)4"},
+   {VPU_V_H263, "video/x-h263"},
+-- 
+2.17.1
+

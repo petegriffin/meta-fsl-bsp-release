@@ -1,0 +1,52 @@
+From 06b516734e7cd5aeffeecfc59d19eb99d9b28b23 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Mon, 8 Jun 2020 17:23:34 -0400
+Subject: [PATCH 6/6] MMIOT-498: Select allocator based on the secure field in
+ sink caps
+
+When secure=y, allocate the frame buffers in secure display heap. Otherwise,
+allocate them in the default ion heap.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ plugins/vpu/gstvpudec.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/vpu/gstvpudec.c b/plugins/vpu/gstvpudec.c
+index 71005fd..1b1c3cf 100755
+--- a/plugins/vpu/gstvpudec.c
++++ b/plugins/vpu/gstvpudec.c
+@@ -514,11 +514,28 @@ gst_vpu_dec_decide_allocation (GstVideoDecoder * bdec, GstQuery * query)
+     if (allocator) {
+       gst_object_unref (allocator);
+     }
+-    GST_DEBUG_OBJECT (dec, "using vpu allocator.\n");
+ #ifdef USE_ION
+-    allocator = gst_ion_allocator_obtain ();
++    {
++      GstCaps *sinkcaps = gst_pad_get_current_caps (GST_VIDEO_DECODER_SINK_PAD(bdec));
++      GstStructure *structure;
++      gboolean secure = FALSE;
++
++      GST_DEBUG_OBJECT (dec, "sink caps %" GST_PTR_FORMAT, sinkcaps);
++
++      structure = gst_caps_get_structure (sinkcaps, 0);
++      if(gst_structure_get_boolean (structure, "secure", &secure) && secure) {
++        // Allocate in secure display heap
++        GST_DEBUG_OBJECT (dec, "using secure display heap\n");
++        allocator = gst_ion_allocator_display_obtain ();
++      } else {
++        GST_DEBUG_OBJECT (dec, "using default ion heap.\n");
++        allocator = gst_ion_allocator_obtain ();
++      }
++      gst_object_unref(sinkcaps);
++    }
+ #endif
+     if (!allocator) {
++      GST_DEBUG_OBJECT (dec, "using vpu allocator.\n");
+       allocator = gst_vpu_allocator_obtain();
+     }
+     dec->vpu_dec_object->use_my_allocator = TRUE;
+-- 
+2.17.1
+

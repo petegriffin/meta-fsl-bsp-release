@@ -1,0 +1,121 @@
+From 65025eda70e9f8210f2f45ee7751aeef176880d4 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 9 Jan 2020 11:44:39 -0500
+Subject: [PATCH 1/6] vpudec: Enable VPU secure mode
+
+In secure mode, the VPU expects the virtual address of the shared memory and
+the physical address of the secure memory. Retrieve the physisal address of
+the secure ION buffer and provide it to the VPU wrapper API.
+
+When the GstBuffer does not have a ION secure memory, provide NULL as the
+physical address. The VPU wrapper will use its internal ring buffer to send
+the data to the VPU.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ plugins/vpu/gstvpudecobject.c | 63 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/vpu/gstvpudecobject.c b/plugins/vpu/gstvpudecobject.c
+index 8d9085a..b1d2191 100644
+--- a/plugins/vpu/gstvpudecobject.c
++++ b/plugins/vpu/gstvpudecobject.c
+@@ -20,10 +20,14 @@
+ 
+ #include <string.h>
+ #include <libdrm/drm_fourcc.h>
++#include <linux/dma-buf.h>
+ #include <gst/video/gstvideometa.h>
+ #include <gst/video/gstvideohdr10meta.h>
+ #include "gstimxcommon.h"
+ #include <gst/allocators/gstphymemmeta.h>
++#include <gst/allocators/gstphysmemory.h>
++#include <gst/allocators/gstdmabufmeta.h>
++#include <gst/allocators/gstdmabuf.h>
+ #include "gstvpuallocator.h"
+ #include "gstvpudecobject.h"
+ 
+@@ -573,6 +577,13 @@ gst_vpu_dec_object_set_vpu_param (GstVpuDecObject * vpu_dec_object, \
+   open_param->nPicWidth = GST_VIDEO_INFO_WIDTH(info);
+   open_param->nPicHeight = GST_VIDEO_INFO_HEIGHT(info);
+ 
++#if ENABLE_SDP
++  open_param->nSecureMode = 1;
++#else
++  open_param->nSecureMode = 0;
++#endif
++  open_param->nSecureBufferAllocSize = 0;
++
+   return TRUE;
+ }
+ 
+@@ -1256,6 +1267,7 @@ gst_vpu_dec_object_set_vpu_input_buf (GstVpuDecObject * vpu_dec_object, \
+ {
+   GstBuffer * buffer;
+   GstMapInfo minfo;
++  unsigned char *phys_addr = NULL;
+ 
+   /* Hantro video decoder can output video frame even if only input one frame.
+    * Needn't send EOS to drain it.
+@@ -1283,8 +1295,57 @@ gst_vpu_dec_object_set_vpu_input_buf (GstVpuDecObject * vpu_dec_object, \
+   buffer = frame->input_buffer;
+   gst_buffer_map (buffer, &minfo, GST_MAP_READ);
+ 
++#if ENABLE_SDP
++  /* Actual end-to-end SDP */
++  {
++    unsigned int mem_count = gst_buffer_n_memory(buffer);
++    GstMemory *memory = NULL;
++
++    if(mem_count != 1) {
++      GST_ERROR("buffer does not have exactely one memory");
++      return FALSE;
++    }
++
++    memory = gst_buffer_get_memory(buffer, 0);
++    if(memory == NULL) {
++      GST_ERROR("invalid memory in buffer");
++      return FALSE;
++    }
++
++    if(strcmp(memory->allocator->mem_type, "ionmem") == 0) {
++      GST_DEBUG("memory type is ionmem");
++
++      /* Debug physical address */
++      int secure_fd = -1;
++      struct dma_buf_phys dma_phys;
++
++      secure_fd = gst_dmabuf_memory_get_fd(memory);
++      if(secure_fd < 0) {
++        GST_ERROR("invalid ION file descriptor");
++        return FALSE;
++      }
++
++      GST_INFO("Get physical address for the secure ION buffer\n");
++      if (ioctl(secure_fd, DMA_BUF_IOCTL_PHYS, &dma_phys) < 0) {
++        GST_ERROR("Cannot get ION physical address\n");
++        return FALSE;
++      }
++
++      phys_addr = dma_phys.phys;
++      if(phys_addr == NULL) {
++        GST_ERROR("ION physical address is NULL\n");
++        return FALSE;
++      }
++    } else {
++      // When the physical address is NULL, the vpu wrapper will use its ring buffer. 
++      phys_addr = NULL;
++    }
++
++    gst_memory_unref(memory);
++  }
++#endif
+   vpu_buffer_node->nSize = minfo.size;
+-  vpu_buffer_node->pPhyAddr = NULL;
++  vpu_buffer_node->pPhyAddr = phys_addr;
+   vpu_buffer_node->pVirAddr = minfo.data;
+   if (vpu_dec_object->input_state && vpu_dec_object->input_state->codec_data) {
+     GstBuffer *buffer2 = vpu_dec_object->input_state->codec_data;
+-- 
+2.17.1
+
