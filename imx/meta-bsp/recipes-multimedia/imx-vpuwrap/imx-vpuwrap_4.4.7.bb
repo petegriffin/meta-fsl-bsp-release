@@ -8,7 +8,8 @@ SECTION = "multimedia"
 LIC_FILES_CHKSUM = "file://COPYING;md5=72c0f70181bb6e83eee6aab8de12a9f3"
 
 SRC_URI = "${FSL_MIRROR}/${PN}-${PV}.bin;fsl-eula=true"
-#DRM_PATCH
+
+SRC_URI += "file://0001-MMIOT-460-Include-picture-ID-in-frame-info-structure.patch;md5sum=09ade3fdc5e19388f5d1ba223dd17c18" 
 S = "${WORKDIR}/${PN}-${PV}"
 
 SRC_URI[md5sum] = "c1c23d2524d0b48c26c14cf48bfb38e1"

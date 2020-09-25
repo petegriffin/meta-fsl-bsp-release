@@ -1,0 +1,89 @@
+From 1f0a73b56d7a5ccd587ae35404a68b568f44f8b6 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Wed, 25 Mar 2020 23:09:24 -0400
+Subject: [PATCH] MMIOT-460: Include picture ID in frame info structure
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ vpu_wrapper.h        | 9 +++++++--
+ vpu_wrapper_hantro.c | 8 ++++++++
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/vpu_wrapper.h b/vpu_wrapper.h
+index ff6d8f2..d66c4bc 100644
+--- a/vpu_wrapper.h
++++ b/vpu_wrapper.h
+@@ -33,6 +33,9 @@ extern "C" {
+ 	(((major) << 16) + ((minor) << 8) + (release))
+ #define VPU_WRAPPER_VERSION_CODE	VPU_WRAPPER_VERSION(3, 0, 0)
+ 
++// Anyone compiling against this header can know that extra fields are present in structs
++#define VPU_WRAPPER_HAS_PIC_ID 1
++
+ /**************************** decoder part **********************************/
+ 
+ #define VPU_DEC_MAX_NUM_MEM_REQS 2
+@@ -394,7 +397,8 @@ typedef struct {
+ 	unsigned int nQ16ShiftWidthDivHeightRatio;	/*support dynamic ratio, refer to definition in struct 'VpuDecInitInfo'*/
+ 	int rfc_luma_offset;
+ 	int rfc_chroma_offset;
+-	int nReserved[7];		/*reserved for recording other info*/
++	int nPicId[2]; /* Picture ID, custom application value that was passed in VpuBufferNode::nPicId, see: OUTPUT_BUFFER_PRIVATE::nPicId[2] */
++	int nReserved[5];		/*reserved for recording other info*/
+ }VpuFrameExtInfo;
+ 
+ typedef struct {
+@@ -457,8 +461,9 @@ typedef struct
+ 	unsigned char* pVirAddr;	/*buffer virtual base addr*/
+ 	unsigned int nSize;		/*valid data length */
+ 	VpuCodecData sCodecData;	/*private data specified by codec*/
++	int nPicId; /* Picture ID, custom application value that will be returned by decoder in VpuFrameExtInfo::nPicId[2] */
+ 
+-	int nReserved[2];				/*reserved for future extension*/
++	int nReserved[1];				/*reserved for future extension*/
+ 	void* pPrivate;				/*reserved for future special extension*/
+ }VpuBufferNode;
+ 
+diff --git a/vpu_wrapper_hantro.c b/vpu_wrapper_hantro.c
+index 5aa6d92..decb836 100644
+--- a/vpu_wrapper_hantro.c
++++ b/vpu_wrapper_hantro.c
+@@ -168,6 +168,8 @@ typedef struct
+   int nBsBufLen;
+   int nBsBufOffset;
+ 
++  int nCurrentPicId;
++
+   /* state */
+   VpuDecState state;
+   /*management of consumed bytes: used to sync with frame boundary*/
+@@ -747,6 +749,8 @@ static VpuDecRetCode VPU_DecProcessInBuf(VpuDecObj* pObj, VpuBufferNode* pInData
+   if(pInData->pVirAddr == NULL || pInData->nSize == 0)
+     return VPU_DEC_RET_SUCCESS;
+ 
++  pObj->nCurrentPicId = pInData->nPicId;
++
+   useRingBuffer = !(pObj->bSecureMode && pInData->pPhyAddr != NULL);
+ 
+   if(pObj->nPrivateSeqHeaderInserted == 0)
+@@ -935,6 +939,8 @@ static VpuDecRetCode VPU_DecGetFrame(VpuDecObj* pObj, int* pOutBufRetCode)
+       }
+       pObj->frameInfo.pDisplayFrameBuf = &pObj->frameBuf[index];
+       pObj->frameInfo.pExtInfo=&pObj->frmExtInfo;
++      pObj->frameInfo.pExtInfo->nPicId[0] = frm.outBufPrivate.nPicId[0];
++      pObj->frameInfo.pExtInfo->nPicId[1] = frm.outBufPrivate.nPicId[1];
+       //pObj->frameInfo.pExtInfo->nFrmWidth=pSrcInfo->width;
+       //pObj->frameInfo.pExtInfo->nFrmHeight=pSrcInfo->height;
+       //pObj->frameInfo.pExtInfo->FrmCropRect=pSrcInfo->frameCrop;
+@@ -1024,6 +1030,8 @@ static VpuDecRetCode VPU_DecDecode(VpuDecObj* pObj, int* pOutBufRetCode)
+     stream.pSliceInfo = (OMX_U8 *)pObj->slice_info;
+     //stream.picId = pObj->propagateData.picIndex;
+ 
++    stream.picId = pObj->nCurrentPicId;
++
+     unsigned int bytes = 0;
+     FRAME frm;
+     memset(&frm, 0, sizeof(FRAME));
+-- 
+2.17.1
+
