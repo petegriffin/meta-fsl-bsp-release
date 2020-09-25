@@ -1,0 +1,44 @@
+From cd3505e8677b3d9cf13368868db858fa0edb76b7 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 12 Nov 2019 10:19:35 +0100
+Subject: [PATCH 3/9] MMIOT-91 : Fix memory leak in VP9 hwd decoder
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ decoder_sw/software/source/vp9/vp9hwd_asic.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/decoder_sw/software/source/vp9/vp9hwd_asic.c b/decoder_sw/software/source/vp9/vp9hwd_asic.c
+index 3f46051..2582d10 100755
+--- a/decoder_sw/software/source/vp9/vp9hwd_asic.c
++++ b/decoder_sw/software/source/vp9/vp9hwd_asic.c
+@@ -632,7 +632,7 @@ i32 Vp9AsicAllocateFilterBlockMem(struct Vp9DecContainer *dec_cont) {
+       dwl_ret = HANTRO_OK;
+     }
+ 
+-    if (asic_buff->tile_edge.virtual_address == NULL) {
++    if (asic_buff->tile_edge.bus_address == 0) {
+       dec_cont->next_buf_size = size;
+       dec_cont->buf_type = TILE_EDGE_BUFFER;
+       dec_cont->buf_num = 1;
+@@ -905,7 +905,7 @@ i32 Vp9MallocRefFrm(struct Vp9DecContainer *dec_cont, u32 index) {
+   }
+ 
+   if (index < dec_cont->min_buffer_num) {
+-    if (asic_buff->pp_pictures[index].virtual_address == NULL
++    if (asic_buff->pp_pictures[index].bus_address == 0
+         && dec_cont->output_format == DEC_OUT_FRM_RASTER_SCAN) {
+       if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, RASTERSCAN_OUT_BUFFER)) {
+         dec_cont->next_buf_size = asic_buff->pp_size;
+@@ -920,7 +920,7 @@ i32 Vp9MallocRefFrm(struct Vp9DecContainer *dec_cont, u32 index) {
+       }
+     }
+ 
+-    if (asic_buff->pp_pictures[index].virtual_address == NULL && dec_cont->down_scale_enabled) {
++    if (asic_buff->pp_pictures[index].bus_address == 0 && dec_cont->down_scale_enabled) {
+       if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, DOWNSCALE_OUT_BUFFER)) {
+         dec_cont->next_buf_size = asic_buff->pp_size;
+         dec_cont->buf_type = DOWNSCALE_OUT_BUFFER;
+-- 
+2.17.1
+

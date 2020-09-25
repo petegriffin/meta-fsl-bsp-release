@@ -1,0 +1,146 @@
+From 4094cb451c7e991536e3cc0d5a09f8caf5fadbba Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 5 Nov 2019 16:46:58 +0100
+Subject: [PATCH 1/9] MMIOT-193 : Use hantro driver to read VPU io regs
+
+When doing secure playback, VPU registers are protected in TZ.
+User space cannot access them directly and shall use the Kernel driver.
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ decoder_sw/software/linux/dwl/dwl_linux.c | 67 ++++++++++++++++++++++-
+ 1 file changed, 65 insertions(+), 2 deletions(-)
+
+diff --git a/decoder_sw/software/linux/dwl/dwl_linux.c b/decoder_sw/software/linux/dwl/dwl_linux.c
+index 4b4e304..5fcf2fa 100755
+--- a/decoder_sw/software/linux/dwl/dwl_linux.c
++++ b/decoder_sw/software/linux/dwl/dwl_linux.c
+@@ -196,6 +196,34 @@ static void PrintIrqType(u32 core_id, u32 status) {
+ }
+ #endif
+ 
++#ifdef CFG_SECURE_DATA_PATH
++u32 *DWLReadRegisters(int mem_dev, unsigned int core_id, unsigned int reg_size)
++{
++  const char *io = NULL;
++  struct core_desc Core;
++ 
++  DWL_DEBUG("%s %d\n", __func__, core_id);
++ 
++  io = DWLmalloc(reg_size);
++  if (!io)
++    goto error;
++ 
++  Core.id = core_id;
++  Core.regs = io;
++  Core.size = reg_size;
++
++  if (ioctl(mem_dev, HANTRODEC_IOCS_DEC_PULL_REG, &Core)) {
++    DWL_DEBUG("%s","ioctl HANTRODEC_IOCS_*_PULL_REG failed\n");
++    goto error;
++  }
++ 
++  return (u32 *)io;
++
++error:
++  DWLfree(io);
++  return NULL;
++}
++#endif
+ /*------------------------------------------------------------------------------
+     Function name   : DWLMapRegisters
+     Description     :
+@@ -687,19 +715,31 @@ void DWLReadAsicConfig(DWLHwConfig *hw_cfg,u32 client_type) {
+     goto end;
+   }
+   
++#ifdef CFG_SECURE_DATA_PATH
++  io = DWLReadRegisters(fd_dec,core_id, reg_size);
++  if (io == NULL) {
++    DWL_DEBUG("%s","failed to read registers\n");
++    goto end;
++  }
++#else
+   io = DWLMapRegisters(fd_dec, base, reg_size, 0);
+   if (io == MAP_FAILED) {
+     DWL_DEBUG("%s","failed to mmap registers\n");
+     goto end;
+   }
+-  
++#endif
++
+   /* Decoder configuration */
+   memset(hw_cfg, 0, sizeof(*hw_cfg));
+ 
+   ReadCoreConfig(io, hw_cfg);
+   asic_cfg_info[idx].cfg = *hw_cfg; /*store the value*/
+ 
++#ifdef CFG_SECURE_DATA_PATH
++  DWLfree(io);
++#else
+   DWLUnmapRegisters(io, reg_size);
++#endif
+ 
+ end:
+   //if (fd != -1) close(fd);
+@@ -753,15 +793,27 @@ void DWLReadMCAsicConfig(DWLHwConfig hw_cfg[MAX_ASIC_CORES]) {
+   memset(hw_cfg, 0, MAX_ASIC_CORES * sizeof(*hw_cfg));
+ 
+   for (i = 0; i < n_cores; i++) {
++#ifdef CFG_SECURE_DATA_PATH
++    io = DWLReadRegisters(fd_dec,i, reg_size);
++    if (io == NULL) {
++      DWL_DEBUG("%s","failed to read registers\n");
++      goto end;
++    }
++#else
+     io = DWLMapRegisters(fd_dec, mc_reg_base[i], reg_size, 0);
+     if (io == MAP_FAILED) {
+       DWL_DEBUG("%s","failed to mmap registers\n");
+       goto end;
+     }
++#endif
+ 
+     ReadCoreConfig(io, hw_cfg + i);
+ 
++#ifdef CFG_SECURE_DATA_PATH
++    DWLfree(io);
++#else
+     DWLUnmapRegisters(io, reg_size);
++#endif
+   }
+ 
+ end:
+@@ -814,17 +866,28 @@ void DWLReadAsicFuseStatus(struct DWLHwFuseStatus *hw_fuse_sts) {
+     goto end;
+   }
+ 
++#ifdef CFG_SECURE_DATA_PATH
++  io = DWLReadRegisters(fd_dec,0, reg_size);
++  if (io == NULL) {
++    DWL_DEBUG("%s","failed to read registers\n");
++    goto end;
++  }
++#else
+   io = DWLMapRegisters(fd_dec, base, reg_size, 0);
+-
+   if (io == MAP_FAILED) {
+     DWL_DEBUG("%s","failed to mmap\n");
+     goto end;
+   }
++#endif
+ 
+   /* Decoder fuse configuration */
+   ReadCoreFuse(io, hw_fuse_sts);
+ 
++#ifdef CFG_SECURE_DATA_PATH
++  DWLfree(io);
++#else
+   DWLUnmapRegisters(io, reg_size);
++#endif
+ 
+ end:
+   //if (fd != -1) close(fd);
+-- 
+2.17.1
+

@@ -1,0 +1,160 @@
+From 282b05cd626b574372c5cfd8540958e2017ff5f8 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 12 Nov 2019 10:19:35 +0100
+Subject: [PATCH 2/9] MMIOT-91 : Fix memory leak in VP9 hwd decoder
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ decoder_sw/software/linux/dwl/dwl_linux.c    |  4 ++-
+ decoder_sw/software/source/vp9/vp9hwd_asic.c | 36 ++++++++++----------
+ 2 files changed, 21 insertions(+), 19 deletions(-)
+
+diff --git a/decoder_sw/software/linux/dwl/dwl_linux.c b/decoder_sw/software/linux/dwl/dwl_linux.c
+index 5fcf2fa..5141db7 100755
+--- a/decoder_sw/software/linux/dwl/dwl_linux.c
++++ b/decoder_sw/software/linux/dwl/dwl_linux.c
+@@ -1296,6 +1296,7 @@ void DWLFreeLinear(const void *instance, struct DWLLinearMem *info) {
+ 
+   if (info->ion_fd >= 0)
+     close(info->ion_fd);
++
+ #else // USE_ION
+   if (info->virtual_address != NULL)
+     munmap(info->virtual_address, info->size);
+@@ -1304,7 +1305,8 @@ void DWLFreeLinear(const void *instance, struct DWLLinearMem *info) {
+     ioctl(dec_dwl->fd_memalloc, MEMALLOC_IOCSFREEBUFFER, &info->bus_address);
+ #endif // USE_ION
+ 
+-
++  info->virtual_address = NULL;
++  info->bus_address = 0;
+ }
+ 
+ /*------------------------------------------------------------------------------
+diff --git a/decoder_sw/software/source/vp9/vp9hwd_asic.c b/decoder_sw/software/source/vp9/vp9hwd_asic.c
+index 4ec74d8..3f46051 100755
+--- a/decoder_sw/software/source/vp9/vp9hwd_asic.c
++++ b/decoder_sw/software/source/vp9/vp9hwd_asic.c
+@@ -170,12 +170,12 @@ i32 Vp9AsicAllocateFilterBlockMem(struct Vp9DecContainer *dec_cont) {
+ 
+ void Vp9AsicReleaseFilterBlockMem(struct Vp9DecContainer *dec_cont) {
+   struct DecAsicBuffers *asic_buff = dec_cont->asic_buff;
+-  if (asic_buff->filter_mem.virtual_address != NULL) {
++  if (asic_buff->filter_mem.bus_address) {
+     DWLFreeLinear(dec_cont->dwl, &asic_buff->filter_mem);
+     asic_buff->filter_mem.virtual_address = NULL;
+     asic_buff->filter_mem.size = 0;
+   }
+-  if (asic_buff->bsd_control_mem.virtual_address != NULL) {
++  if (asic_buff->bsd_control_mem.bus_address) {
+     DWLFreeLinear(dec_cont->dwl, &asic_buff->bsd_control_mem);
+     asic_buff->bsd_control_mem.virtual_address = NULL;
+     asic_buff->bsd_control_mem.size = 0;
+@@ -346,21 +346,21 @@ i32 Vp9MallocRefFrm(struct Vp9DecContainer *dec_cont, u32 index) {
+ i32 Vp9FreeRefFrm(struct Vp9DecContainer *dec_cont, u32 index) {
+   struct DecAsicBuffers *asic_buff = dec_cont->asic_buff;
+ 
+-  if (asic_buff->pictures[index].virtual_address != NULL)
++  if (asic_buff->pictures[index].bus_address)
+     DWLFreeRefFrm(dec_cont->dwl, &asic_buff->pictures[index]);
+-  if (asic_buff->pictures_c[index].virtual_address != NULL)
++  if (asic_buff->pictures_c[index].bus_address)
+     DWLFreeRefFrm(dec_cont->dwl, &asic_buff->pictures_c[index]);
+-  if (asic_buff->dir_mvs[index].virtual_address != NULL)
++  if (asic_buff->dir_mvs[index].bus_address)
+     DWLFreeRefFrm(dec_cont->dwl, &asic_buff->dir_mvs[index]);
+-  if (asic_buff->pp_luma[index].virtual_address != NULL)
++  if (asic_buff->pp_luma[index].bus_address)
+     DWLFreeLinear(dec_cont->dwl, &asic_buff->pp_luma[index]);
+-  if (asic_buff->pp_chroma[index].virtual_address != NULL)
++  if (asic_buff->pp_chroma[index].bus_address)
+     DWLFreeLinear(dec_cont->dwl, &asic_buff->pp_chroma[index]);
+ 
+   if (dec_cont->use_video_compressor) {
+-    if (asic_buff->cbs_luma_table[index].virtual_address != NULL)
++    if (asic_buff->cbs_luma_table[index].bus_address)
+       DWLFreeRefFrm(dec_cont->dwl, &asic_buff->cbs_luma_table[index]);
+-    if (asic_buff->cbs_chroma_table[index].virtual_address != NULL)
++    if (asic_buff->cbs_chroma_table[index].bus_address)
+       DWLFreeRefFrm(dec_cont->dwl, &asic_buff->cbs_chroma_table[index]);
+   }
+   return HANTRO_OK;
+@@ -498,7 +498,7 @@ i32 Vp9FreeSegmentMap(struct Vp9DecContainer *dec_cont) {
+   struct DecAsicBuffers *asic_buff = dec_cont->asic_buff;
+ 
+   for (i = 0; i < 2; i++) {
+-    if (asic_buff->segment_map[i].virtual_address != NULL) {
++    if (asic_buff->segment_map[i].bus_address) {
+       DWLFreeLinear(dec_cont->dwl, &asic_buff->segment_map[i]);
+     }
+   }
+@@ -624,7 +624,7 @@ i32 Vp9AsicAllocateFilterBlockMem(struct Vp9DecContainer *dec_cont) {
+ 
+   if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, TILE_EDGE_BUFFER)) {
+     // Release old buffer.
+-    if (asic_buff->tile_edge.virtual_address != NULL) {
++    if (asic_buff->tile_edge.bus_address) {
+       dec_cont->buf_to_free = &asic_buff->tile_edge;
+       dwl_ret = DEC_WAITING_FOR_BUFFER;
+     } else {
+@@ -663,7 +663,7 @@ i32 Vp9AsicReleaseFilterBlockMem(struct Vp9DecContainer *dec_cont) {
+   struct DecAsicBuffers *asic_buff = dec_cont->asic_buff;
+ 
+   if (!IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, TILE_EDGE_BUFFER)) {
+-    if (asic_buff->tile_edge.virtual_address != NULL) {
++    if (asic_buff->tile_edge.bus_address) {
+       DWLFreeLinear(dec_cont->dwl, &asic_buff->tile_edge);
+       asic_buff->tile_edge.virtual_address = NULL;
+       asic_buff->tile_edge.size = 0;
+@@ -722,7 +722,7 @@ void Vp9AsicReleasePictures(struct Vp9DecContainer *dec_cont) {
+   //for (i = 0; i < dec_cont->num_buffers; i++) {
+   for (i = 0; i < VP9DEC_MAX_PIC_BUFFERS; i++) {
+     if (!IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, REFERENCE_BUFFER) &&
+-        asic_buff->pictures[i].virtual_address != NULL)
++        asic_buff->pictures[i].bus_address)
+       DWLFreeRefFrm(dec_cont->dwl, &asic_buff->pictures[i]);
+   }
+ 
+@@ -778,7 +778,7 @@ i32 Vp9ReallocateFrame(struct Vp9DecContainer *dec_cont, u32 index) {
+   /* Reallocate larger picture buffer into current index */
+   if (!IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, REFERENCE_BUFFER) &&
+       asic_buff->pictures[asic_buff->out_buffer_i].logical_size < asic_buff->picture_size) {
+-    if (asic_buff->pictures[index].virtual_address != NULL)
++    if (asic_buff->pictures[index].bus_address)
+       DWLFreeRefFrm(dec_cont->dwl, &asic_buff->pictures[index]);
+     asic_buff->pictures[index].mem_type = DWL_MEM_TYPE_DPB;
+     ret |= DWLMallocRefFrm(dec_cont->dwl, asic_buff->picture_size, &asic_buff->pictures[index]);
+@@ -885,7 +885,7 @@ i32 Vp9MallocRefFrm(struct Vp9DecContainer *dec_cont, u32 index) {
+   asic_buff->picture_size = luma_size + chroma_size + dir_mvs_size + luma_table_size + chroma_table_size;
+   asic_buff->pp_size = pp_luma_size + pp_chroma_size;
+ 
+-  if (asic_buff->pictures[index].virtual_address == NULL) {
++  if (asic_buff->pictures[index].bus_address == 0) {
+     if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, REFERENCE_BUFFER)) {
+       dec_cont->next_buf_size = asic_buff->picture_size;
+       dec_cont->buf_type = REFERENCE_BUFFER;
+@@ -1240,10 +1240,10 @@ i32 Vp9AllocateSegmentMap(struct Vp9DecContainer *dec_cont) {
+   if (memory_size <= asic_buff->segment_map_size) return HANTRO_OK;
+ 
+   /* Free old segment maps */
+-  if (asic_buff->segment_map.virtual_address)
++  if (asic_buff->segment_map.bus_address)
+     Vp9FreeSegmentMap(dec_cont);
+ 
+-  if (asic_buff->segment_map.virtual_address == NULL) {
++  if (asic_buff->segment_map.bus_address == 0) {
+     if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, SEGMENT_MAP_BUFFER)) {
+       dec_cont->next_buf_size = memory_size * 2;
+       dec_cont->buf_to_free = NULL;
+@@ -1276,7 +1276,7 @@ i32 Vp9AllocateSegmentMap(struct Vp9DecContainer *dec_cont) {
+ i32 Vp9FreeSegmentMap(struct Vp9DecContainer *dec_cont) {
+   struct DecAsicBuffers *asic_buff = dec_cont->asic_buff;
+ 
+-  if (asic_buff->segment_map.virtual_address != NULL) {
++  if (asic_buff->segment_map.bus_address) {
+     if (IS_EXTERNAL_BUFFER(dec_cont->ext_buffer_config, SEGMENT_MAP_BUFFER)) {
+       dec_cont->buf_to_free = &asic_buff->segment_map;
+       dec_cont->next_buf_size = 0;
+-- 
+2.17.1
+

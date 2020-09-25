@@ -1,0 +1,35 @@
+From 51d9275318eb4ae850627a462dc6818d127dce2a Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Thu, 7 May 2020 13:24:41 -0400
+Subject: [PATCH 6/9] MMIOT-477: Parse VP9 super frame index in secure mode
+
+In secure mode, VP9 super frame index shall be parsed in secure mode as well.
+The requirement is that it shall not be encrypted otherwise CPU will not be
+able to access it.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ openmax_il/source/decoder/codec_vp9.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/openmax_il/source/decoder/codec_vp9.c b/openmax_il/source/decoder/codec_vp9.c
+index fd50c73..8d08dd1 100755
+--- a/openmax_il/source/decoder/codec_vp9.c
++++ b/openmax_il/source/decoder/codec_vp9.c
+@@ -190,11 +190,10 @@ static CODEC_STATE decoder_decode_vp9(CODEC_PROTOTYPE * arg,
+     const OMX_U8* data_end = data_start + data_sz;
+     DBGT_PDEBUG("Input size %d", input.data_len);
+ 
+-    if (!this->secure_mode)
+-        ParseSuperframeIndex(input.stream, data_sz, sizes, &frames_this_pts);
++    ParseSuperframeIndex(input.stream, data_sz, sizes, &frames_this_pts);
+ 
+     do {
+-        if (data_sz && (*data_start & 0xe0) == 0xc0 && !this->secure_mode) {
++        if (data_sz && (*data_start & 0xe0) == 0xc0) {
+             const OMX_U8 marker = *data_start;
+             const OMX_U32 frames = (marker & 0x7) + 1;
+             const OMX_U32 mag = ((marker >> 3) & 0x3) + 1;
+-- 
+2.17.1
+

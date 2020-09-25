@@ -1,0 +1,68 @@
+From a6c4d93f630b8ad3df0f80634dc0549c81779877 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Thu, 24 Sep 2020 09:55:39 +0200
+Subject: [PATCH 9/9] MMIOT-578: integrate h264 and hevc NAL parsing patches
+ from bsp team
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ .../software/source/h264high/legacy/h264hwd_sei.c    | 12 +++++++-----
+ decoder_sw/software/source/hevc/hevc_sei.c           |  2 ++
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/decoder_sw/software/source/h264high/legacy/h264hwd_sei.c b/decoder_sw/software/source/h264high/legacy/h264hwd_sei.c
+index 8c512b4..68bf81e 100755
+--- a/decoder_sw/software/source/h264high/legacy/h264hwd_sei.c
++++ b/decoder_sw/software/source/h264high/legacy/h264hwd_sei.c
+@@ -120,7 +120,7 @@ u32 h264bsdDecodeSeiParameters(seqParamSet_t **sps, strmData_t *p_strm_data,
+     tmp_strm_data = *p_strm_data;
+     switch (pay_load_type) {
+     case SEI_BUFFERING_PERIOD:
+-      h264bsdDecodeBufferingPeriodInfo(sps, &tmp_strm_data,
++      tmp=h264bsdDecodeBufferingPeriodInfo(sps, &tmp_strm_data,
+                                        &p_sei_parameters->buffering_period_info);
+       if(tmp == HANTRO_NOK) {
+         p_sei_parameters->buffering_period_info.exist_flag = 0;
+@@ -130,7 +130,7 @@ u32 h264bsdDecodeSeiParameters(seqParamSet_t **sps, strmData_t *p_strm_data,
+       break;
+ 
+     case SEI_PIC_TIMING:
+-      h264bsdDecodePicTimingInfo(sps,
++      tmp=h264bsdDecodePicTimingInfo(sps,
+                                  &tmp_strm_data, &p_sei_parameters->pic_timing_info,
+                                  &p_sei_parameters->buffering_period_info);
+       if(tmp == HANTRO_NOK) {
+@@ -243,12 +243,14 @@ u32 h264bsdDecodeBufferingPeriodInfo(seqParamSet_t **sps,
+   seqParamSet_t *p_seq_param_set;
+   (void) DWLmemset(p_buffering_period_info, 0, sizeof(bufferingPeriodInfo_t));
+ 
+-  p_buffering_period_info->seq_parameter_set_id =
+-    tmp = h264bsdDecodeExpGolombUnsigned(p_strm_data,
+-                                         &p_buffering_period_info->seq_parameter_set_id);
++  tmp = h264bsdDecodeExpGolombUnsigned(p_strm_data,
++                                       &p_buffering_period_info->seq_parameter_set_id);
+   if (tmp != HANTRO_OK)
+     return(tmp);
+ 
++  if (p_buffering_period_info->seq_parameter_set_id >= MAX_NUM_SEQ_PARAM_SETS)
++    return HANTRO_NOK;
++
+   p_seq_param_set = sps[p_buffering_period_info->seq_parameter_set_id];
+   if (p_seq_param_set == NULL || p_seq_param_set->vui_parameters == NULL)
+     return (HANTRO_NOK);
+diff --git a/decoder_sw/software/source/hevc/hevc_sei.c b/decoder_sw/software/source/hevc/hevc_sei.c
+index 4954269..11e4a80 100755
+--- a/decoder_sw/software/source/hevc/hevc_sei.c
++++ b/decoder_sw/software/source/hevc/hevc_sei.c
+@@ -54,6 +54,8 @@ u32 buffering_period(int layerid, struct StrmData *stream,
+   u32 cpb_delay_len, dpb_delay_len;
+ 
+   tmp = HevcDecodeExpGolombUnsigned(stream, &value);
++  if (value >= MAX_NUM_SEQ_PARAM_SETS)
++    return HANTRO_NOK;
+   if (tmp == END_OF_STREAM) return (END_OF_STREAM);
+   buf_parameter->bp_seq_parameter_set_id = value;
+   if (sps[value] == NULL)
+-- 
+2.17.1
+

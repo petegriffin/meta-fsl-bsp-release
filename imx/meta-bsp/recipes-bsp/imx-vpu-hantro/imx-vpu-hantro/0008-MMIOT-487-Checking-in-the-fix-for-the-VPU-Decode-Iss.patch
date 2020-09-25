@@ -1,0 +1,34 @@
+From 88b7aad2350a6e531ffe2658d40e7497224fc93c Mon Sep 17 00:00:00 2001
+From: abgnanapragasam <arunbaskar.gnanapragasam@nxp.com>
+Date: Tue, 14 Jul 2020 16:28:56 -0700
+Subject: [PATCH 8/9] MMIOT-487:Checking in the fix for the VPU Decode Issue
+ with DASH Streams
+
+Signed-off-by: abgnanapragasam <arunbaskar.gnanapragasam@nxp.com>
+---
+ decoder_sw/software/source/hevc/hevc_dpb.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/decoder_sw/software/source/hevc/hevc_dpb.c b/decoder_sw/software/source/hevc/hevc_dpb.c
+index 8787c39..4475bbf 100755
+--- a/decoder_sw/software/source/hevc/hevc_dpb.c
++++ b/decoder_sw/software/source/hevc/hevc_dpb.c
+@@ -164,13 +164,13 @@ void *HevcAllocateDpbImage(struct DpbStorage *dpb, i32 pic_order_cnt,
+   }
+ 
+ #ifdef GET_FREE_BUFFER_NON_BLOCK
+-  if (i >= MIN(dpb->dpb_size, dpb->tot_buffers))
++  if (i > MIN(dpb->dpb_size, dpb->tot_buffers))
+     return NULL;
+ #endif
+ 
+   /* Though i should NOT exceed dpb_size, in some error streams it does happen.
+    * As a workaround, we set it to 0. */
+-  if (i == dpb->dpb_size)
++  if (i > dpb->dpb_size)
+     i = 0;
+ 
+   ASSERT(i <= dpb->dpb_size);
+-- 
+2.17.1
+
