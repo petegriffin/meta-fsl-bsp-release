@@ -1,0 +1,34 @@
+From 4138d37ad8a3fe034e992730ceb52f3d4ab1010b Mon Sep 17 00:00:00 2001
+From: Yongqin Liu <yongqin.liu@linaro.org>
+Date: Thu, 21 Jun 2018 22:21:09 +0800
+Subject: [PATCH 03/10] Android related files: changes to work with Treble
+ enabled build
+
+1. change to make libteec and tee-supplicant installed in the vendor partition
+2. use /data/vendor/tee instead of /data/tee as the workspace for tee
+3. local ta files from /vendor/lib
+
+Acked-by: Victor Chong <victor.chong@linaro.org>
+Signed-off-by: Yongqin Liu <yongqin.liu@linaro.org>
+---
+ Android.mk | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/Android.mk b/Android.mk
+index 5a7c8a2..6219382 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -16,7 +16,9 @@ CFG_TEE_FS_PARENT_PATH ?= /data
+ endif
+ 
+ # set CFG_TEE_DATA_PATH before include config.mk
+-CFG_TEE_DATA_PATH ?= /data/tee
++CFG_TEE_DATA_PATH ?= /data/vendor/tee
++TEEC_TEST_LOAD_PATH ?= /data/vendor/tee
++CFG_TEE_FS_PARENT_PATH ?= /data/vendor
+ 
+ ################################################################################
+ # Include optee-client common config and flags                                 #
+-- 
+2.17.1
+

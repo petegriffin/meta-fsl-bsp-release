@@ -1,0 +1,29 @@
+From 210075527eb28173904762d64fca0cc819441ca9 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Fri, 6 Mar 2020 13:31:54 +0100
+Subject: [PATCH 10/10] Protect memcpy against client application providing a
+ NULL pointer as INOUT parameter. memcopy shall not be done. Behaviour of
+ memcpy with NULL pointer is undefined
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ libteec/src/tee_client_api.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/libteec/src/tee_client_api.c b/libteec/src/tee_client_api.c
+index 7099f6d..8a75768 100644
+--- a/libteec/src/tee_client_api.c
++++ b/libteec/src/tee_client_api.c
+@@ -194,7 +194,8 @@ static TEEC_Result teec_pre_process_tmpref(TEEC_Context *ctx,
+ 	if (res != TEEC_SUCCESS)
+ 		return res;
+ 
+-	memcpy(shm->buffer, tmpref->buffer, tmpref->size);
++	if (shm->buffer && tmpref->buffer)	
++		memcpy(shm->buffer, tmpref->buffer, tmpref->size);
+ 	param->u.memref.size = tmpref->size;
+ 	param->u.memref.shm_id = shm->id;
+ 	return TEEC_SUCCESS;
+-- 
+2.17.1
+

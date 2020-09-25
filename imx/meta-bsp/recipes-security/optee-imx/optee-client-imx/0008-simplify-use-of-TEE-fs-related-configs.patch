@@ -1,0 +1,52 @@
+From 6349de0c73c41c7ba7160958a9b794e03933fe61 Mon Sep 17 00:00:00 2001
+From: Victor Chong <victor.chong@linaro.org>
+Date: Fri, 10 May 2019 17:40:15 +0900
+Subject: [PATCH 08/10] simplify use of TEE fs related configs
+
+CFG_TEE_DATA_PATH confuses users because it's only used as a prefix for
+CFG_TEE_LOGS_PATH and not the actual root path for the TEE data dir as
+described. The actual root path is $(TEE_FS_PARENT_PATH)/tee as can be
+seen under tee_supp_fs_init() in tee-supplicant/src/tee_supp_fs.c, so
+just get rid of CFG_TEE_DATA_PATH.
+
+Next, we move "/tee" from tee_supp_fs_init() to CFG_TEE_FS_PARENT_PATH,
+because otherwise, we have the beginning part of the path in a makefile
+(config.mk) and the ending in code (tee_supp_fs_init()), which seems
+messy to manage and error prone. E.g. CFG_TEE_LOGS_PATH (or any of its
+subsequently derived configs) depends on the actual full path of the TEE
+fs, so we can just set
+CFG_TEE_LOGS_PATH ?= $(CFG_TEE_FS_PARENT_PATH)/logs
+rather than
+CFG_TEE_LOGS_PATH ?= $(CFG_TEE_FS_PARENT_PATH)/tee/logs
+where the "tee" here has to match the "tee" in code.
+With this change, the "/tee" subdirectory path is expected from the
+CFG_TEE_FS_PARENT_PATH value, but this change does not modify legacy
+default path of embedded files.
+
+Signed-off-by: Victor Chong <victor.chong@linaro.org>
+Tested-by: Victor Chong <victor.chong@linaro.org> (QEMU v8)
+Acked-by: Etienne Carriere <etienne.carriere@linaro.org>
+---
+ Android.mk | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/Android.mk b/Android.mk
+index 6219382..384a61e 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -15,10 +15,9 @@ CFG_TEE_CLIENT_LOAD_PATH ?= /system/lib
+ CFG_TEE_FS_PARENT_PATH ?= /data
+ endif
+ 
+-# set CFG_TEE_DATA_PATH before include config.mk
+-CFG_TEE_DATA_PATH ?= /data/vendor/tee
++# set CFG_TEE_FS_PARENT_PATH before include config.mk
+ TEEC_TEST_LOAD_PATH ?= /data/vendor/tee
+-CFG_TEE_FS_PARENT_PATH ?= /data/vendor
++CFG_TEE_FS_PARENT_PATH ?= /data/vendor/tee
+ 
+ ################################################################################
+ # Include optee-client common config and flags                                 #
+-- 
+2.17.1
+

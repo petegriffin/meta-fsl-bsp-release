@@ -1,0 +1,49 @@
+From 3c86cb78348c0de9845242c3a5295e23db02fa8f Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 28 May 2019 14:54:27 +0200
+Subject: [PATCH 09/10] CFG_TEE_FS_PARENT_PATH now include tee
+
+---
+ Android.mk                               | 10 ++++------
+ tee-supplicant/tee_supplicant_android.mk |  2 +-
+ 2 files changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/Android.mk b/Android.mk
+index 384a61e..94e42e9 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -9,16 +9,14 @@ ANDROID_VERSION_GE_O := $(shell if [ $(MAJOR_VERSION) -ge 8 ];then echo "true";f
+ # set CFG_TEE_CLIENT_LOAD_PATH before include config.mk
+ ifeq ($(ANDROID_VERSION_GE_O), true)
+ CFG_TEE_CLIENT_LOAD_PATH ?= /vendor/lib
+-CFG_TEE_FS_PARENT_PATH ?= /data/vendor
++TEEC_TEST_LOAD_PATH ?= /data/vendor/tee
++CFG_TEE_FS_PARENT_PATH ?= /data/vendor/tee
+ else
+ CFG_TEE_CLIENT_LOAD_PATH ?= /system/lib
+-CFG_TEE_FS_PARENT_PATH ?= /data
++TEEC_TEST_LOAD_PATH ?= /data/tee
++CFG_TEE_FS_PARENT_PATH ?= /data/tee
+ endif
+ 
+-# set CFG_TEE_FS_PARENT_PATH before include config.mk
+-TEEC_TEST_LOAD_PATH ?= /data/vendor/tee
+-CFG_TEE_FS_PARENT_PATH ?= /data/vendor/tee
+-
+ ################################################################################
+ # Include optee-client common config and flags                                 #
+ ################################################################################
+diff --git a/tee-supplicant/tee_supplicant_android.mk b/tee-supplicant/tee_supplicant_android.mk
+index ab9de38..c6c122e 100644
+--- a/tee-supplicant/tee_supplicant_android.mk
++++ b/tee-supplicant/tee_supplicant_android.mk
+@@ -64,5 +64,5 @@ LOCAL_VENDOR_MODULE := true
+ endif
+ LOCAL_PROPRIETARY_MODULE := true
+ LOCAL_MODULE_TAGS := optional
+-LOCAL_VENDOR_MODULE := true
++
+ include $(BUILD_EXECUTABLE)
+-- 
+2.17.1
+

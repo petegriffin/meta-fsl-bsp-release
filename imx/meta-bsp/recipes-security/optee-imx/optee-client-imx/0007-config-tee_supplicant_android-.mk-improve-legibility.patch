@@ -1,0 +1,31 @@
+From 7b9ee731e81681c1d0e3fb8b4850142d59cc1729 Mon Sep 17 00:00:00 2001
+From: Victor Chong <victor.chong@linaro.org>
+Date: Thu, 25 Apr 2019 17:31:25 +0900
+Subject: [PATCH 07/10] {config,tee_supplicant_android}.mk: improve legibility
+
+Rearrange some text to make them more legible.
+
+Signed-off-by: Victor Chong <victor.chong@linaro.org>
+Reviewed-by: Joakim Bech <joakim.bech@linaro.org>
+Acked-by: Jens Wiklander <jens.wiklander@linaro.org>
+Reviewed-by: Etienne Carriere <etienne.carriere@linaro.org>
+---
+ tee-supplicant/tee_supplicant_android.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tee-supplicant/tee_supplicant_android.mk b/tee-supplicant/tee_supplicant_android.mk
+index 9dd617c..ab9de38 100644
+--- a/tee-supplicant/tee_supplicant_android.mk
++++ b/tee-supplicant/tee_supplicant_android.mk
+@@ -34,7 +34,7 @@ LOCAL_SRC_FILES += src/tee_socket.c
+ LOCAL_CFLAGS += -DCFG_GP_SOCKETS=1
+ endif
+ 
+-RPMB_EMU        := 1
++RPMB_EMU        := 0
+ ifeq ($(RPMB_EMU),1)
+ LOCAL_SRC_FILES += src/sha2.c src/hmac_sha2.c
+ LOCAL_CFLAGS += -DRPMB_EMU=1
+-- 
+2.17.1
+

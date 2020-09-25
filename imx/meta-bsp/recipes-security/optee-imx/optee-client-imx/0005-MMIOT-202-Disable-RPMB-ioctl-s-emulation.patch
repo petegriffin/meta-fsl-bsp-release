@@ -1,0 +1,28 @@
+From de02a0f1c3da7329ed2a6ed6dd58682e7c5512af Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Tue, 5 Mar 2019 20:20:53 -0500
+Subject: [PATCH 05/10] MMIOT-202: Disable RPMB ioctl's emulation
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ tee-supplicant/Makefile | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tee-supplicant/Makefile b/tee-supplicant/Makefile
+index d206b68..b6d9de5 100644
+--- a/tee-supplicant/Makefile
++++ b/tee-supplicant/Makefile
+@@ -3,8 +3,8 @@ include ../config.mk
+ 
+ OUT_DIR := $(OO)/tee-supplicant
+ 
+-# Emulate RPMB ioctl's
+-RPMB_EMU	:= 1
++# Disable RPMB ioctl's emulation
++RPMB_EMU	:= 0
+ 
+ .PHONY: all tee-supplicant clean
+ 
+-- 
+2.17.1
+

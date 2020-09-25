@@ -1,0 +1,32 @@
+From 9714499aed420a357d57cfe625ffdde9979b5dcc Mon Sep 17 00:00:00 2001
+From: Yongqin Liu <yongqin.liu@linaro.org>
+Date: Thu, 29 Mar 2018 16:00:11 +0800
+Subject: [PATCH 02/10] Android.mk & config.mk: move teec.log/teesupp.log under
+ /data/tee
+
+for Android platform, otherwise there will be SELinux problem
+reported
+
+Acked-by: Victor Chong <victor.chong@linaro.org>
+Signed-off-by: Yongqin Liu <yongqin.liu@linaro.org>
+---
+ Android.mk | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Android.mk b/Android.mk
+index fa8b399..5a7c8a2 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -15,6 +15,9 @@ CFG_TEE_CLIENT_LOAD_PATH ?= /system/lib
+ CFG_TEE_FS_PARENT_PATH ?= /data
+ endif
+ 
++# set CFG_TEE_DATA_PATH before include config.mk
++CFG_TEE_DATA_PATH ?= /data/tee
++
+ ################################################################################
+ # Include optee-client common config and flags                                 #
+ ################################################################################
+-- 
+2.17.1
+
