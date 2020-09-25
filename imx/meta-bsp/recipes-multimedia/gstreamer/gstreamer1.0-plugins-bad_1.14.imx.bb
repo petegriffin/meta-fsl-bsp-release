@@ -46,7 +46,10 @@ SRCBRANCH = "MM_04.04.07_1906_L4.14.98"
 SRC_URI = " \
     ${GST1.0-PLUGINS-BAD_SRC};branch=${SRCBRANCH} \
 "
-#DRM_PATCH
+
+SRC_URI += "file://0001-h264parse-Allow-to-parse-encrypted-content.patch;md5sum=b8e5b8887cbd8e28a53d9691f8d5e00b" 
+SRC_URI += "file://0002-h265parse-Allow-to-parse-encrypted-content.patch;md5sum=2c7a77540cb286922645ba08e4426f5d" 
+SRC_URI += "file://0003-h265parse-Update-subsample-after-conversion-to-byte-.patch;md5sum=2ef9b7bdf912163e66711d5e89b023d1" 
 SRCREV = "9fc1ada651093b37675d30a2794044d06bcacdc8" 
 
 # This remove "--exclude=autopoint" option from autoreconf argument to avoid

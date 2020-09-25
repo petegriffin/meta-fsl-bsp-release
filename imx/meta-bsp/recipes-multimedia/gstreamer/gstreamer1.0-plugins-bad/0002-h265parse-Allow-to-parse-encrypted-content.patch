@@ -1,0 +1,35 @@
+From f6cfd19410395c21b541b72bd143347a8cdb8b7e Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 6 Feb 2020 10:51:16 -0500
+Subject: [PATCH 2/3] h265parse: Allow to parse encrypted content
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ gst/videoparsers/gsth265parse.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/gst/videoparsers/gsth265parse.c b/gst/videoparsers/gsth265parse.c
+index df2834883..a09ec01f0 100644
+--- a/gst/videoparsers/gsth265parse.c
++++ b/gst/videoparsers/gsth265parse.c
+@@ -74,14 +74,15 @@ enum
+ static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink",
+     GST_PAD_SINK,
+     GST_PAD_ALWAYS,
+-    GST_STATIC_CAPS ("video/x-h265"));
++    GST_STATIC_CAPS ("video/x-h265; application/x-cenc, original-media-type = (string) video/x-h265"));
+ 
+ static GstStaticPadTemplate srctemplate = GST_STATIC_PAD_TEMPLATE ("src",
+     GST_PAD_SRC,
+     GST_PAD_ALWAYS,
+     GST_STATIC_CAPS ("video/x-h265, parsed = (boolean) true, "
+         "stream-format=(string) { hvc1, hev1, byte-stream }, "
+-        "alignment=(string) { au, nal }"));
++        "alignment=(string) { au, nal }; "
++        "application/x-cenc, original-media-type = (string) video/x-h265")); // TODO Add parsed=true, alignment, ...?
+ 
+ #define parent_class gst_h265_parse_parent_class
+ G_DEFINE_TYPE (GstH265Parse, gst_h265_parse, GST_TYPE_BASE_PARSE);
+-- 
+2.17.1
+
