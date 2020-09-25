@@ -1,0 +1,50 @@
+From f128f10116a6e14a155da4ae8b1a5c82eb519254 Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Tue, 19 Jun 2018 09:16:01 +0300
+Subject: [PATCH 15/87] core: crypto: change supported HMAC key size ranges
+
+Change supported HMAC key size range from 64 to 1024, required to
+successfully pass AOSP Keymaster VTS tests.
+
+From TEE Internal Core API specificaion:
+"Table 5-9, support for other sizes or algorithms is implementation-defined."
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+---
+ core/tee/tee_svc_cryp.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/core/tee/tee_svc_cryp.c b/core/tee/tee_svc_cryp.c
+index 550f3477..731a6191 100644
+--- a/core/tee/tee_svc_cryp.c
++++ b/core/tee/tee_svc_cryp.c
+@@ -412,19 +412,19 @@ static const struct tee_cryp_obj_type_props tee_cryp_obj_props[] = {
+ 	PROP(TEE_TYPE_HMAC_MD5, 8, 64, 512,
+ 		512 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+-	PROP(TEE_TYPE_HMAC_SHA1, 8, 80, 512,
+-		512 / 8 + sizeof(struct tee_cryp_obj_secret),
++	PROP(TEE_TYPE_HMAC_SHA1, 8, 64, 1024,
++		1024 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+-	PROP(TEE_TYPE_HMAC_SHA224, 8, 112, 512,
+-		512 / 8 + sizeof(struct tee_cryp_obj_secret),
++	PROP(TEE_TYPE_HMAC_SHA224, 8, 64, 1024,
++		1024 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+-	PROP(TEE_TYPE_HMAC_SHA256, 8, 192, 1024,
++	PROP(TEE_TYPE_HMAC_SHA256, 8, 64, 1024,
+ 		1024 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+-	PROP(TEE_TYPE_HMAC_SHA384, 8, 256, 1024,
++	PROP(TEE_TYPE_HMAC_SHA384, 8, 64, 1024,
+ 		1024 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+-	PROP(TEE_TYPE_HMAC_SHA512, 8, 256, 1024,
++	PROP(TEE_TYPE_HMAC_SHA512, 8, 64, 1024,
+ 		1024 / 8 + sizeof(struct tee_cryp_obj_secret),
+ 		tee_cryp_obj_secret_value_attrs),
+ 	PROP(TEE_TYPE_GENERIC_SECRET, 8, 0, 4096,
+-- 
+2.17.1
+

@@ -1,0 +1,46 @@
+From 91f6baf4884637708c41e9dd9b51bb2f360ede4a Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 4 Mar 2020 15:53:57 +0100
+Subject: [PATCH 32/87] MMIOT-356 Lock/unlock  not supported if CFG_RPMB_FS=n
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/pta/config.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/core/pta/config.c b/core/pta/config.c
+index 61fcc581..e8de2e09 100644
+--- a/core/pta/config.c
++++ b/core/pta/config.c
+@@ -22,6 +22,7 @@
+ 
+ static unsigned int wConfig = CONFIG_RPMB_UNINITIALIZED;
+ 
++#ifdef CFG_RPMB_FS
+ static TEE_Result set_rpmb_config(uint32_t type, TEE_Param p[TEE_NUM_PARAMS])
+ {
+ 	unsigned int config = CONFIG_RPMB_UNINITIALIZED;
+@@ -49,7 +50,7 @@ static TEE_Result set_rpmb_config(uint32_t type, TEE_Param p[TEE_NUM_PARAMS])
+ 
+ 	return TEE_SUCCESS;
+ }
+-
++#endif
+ /*
+  * Trusted Application Entry Points
+  */
+@@ -60,7 +61,11 @@ static TEE_Result invoke_command(void *psess __unused,
+ {
+ 	switch (cmd) {
+ 	case CONFIG_CMD_SET_RPMB_CONFIG:
++#ifdef CFG_RPMB_FS
+ 		return set_rpmb_config(ptypes, params);
++#else
++		return TEE_ERROR_NOT_SUPPORTED;
++#endif
+ 	default:
+ 		break;
+ 	}
+-- 
+2.17.1
+

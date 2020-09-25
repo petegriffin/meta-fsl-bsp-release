@@ -1,0 +1,30 @@
+From 68713fd5846c4bda15d2fbf1ac385944c6d8f790 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Wed, 6 Mar 2019 17:08:07 -0500
+Subject: [PATCH 27/87] rpmb: Use default configuration
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index ad2979cd..7d6ff004 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -329,11 +329,8 @@ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mmevk))
+ CFG_DDR_SIZE ?= 0x80000000
+ CFG_UART_BASE ?= UART2_BASE
+ 
+-CFG_RPMB_FS ?= y
+-CFG_RPMB_TESTKEY ?= y
+ CFG_RPMB_FS_DEV_ID ?= 2
+-CFG_RPMB_FS_DEBUG_DATA = n
+-$(call force,CFG_RPMB_WRITE_KEY,n)
++
+ CFG_IN_TREE_EARLY_TAS += avb/023f8f1a-292a-432b-8fc4-de8471358067
+ endif
+ 
+-- 
+2.17.1
+

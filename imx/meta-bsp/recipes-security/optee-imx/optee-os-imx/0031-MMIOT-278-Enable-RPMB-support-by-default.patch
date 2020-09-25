@@ -1,0 +1,26 @@
+From 73287b6d202ab672d868cc015d90416136adf16c Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Fri, 21 Jun 2019 08:14:03 +0200
+Subject: [PATCH 31/87] MMIOT-278: Enable RPMB support by default
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ mk/config.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/mk/config.mk b/mk/config.mk
+index 72e5c16c..9102df6a 100644
+--- a/mk/config.mk
++++ b/mk/config.mk
+@@ -134,7 +134,7 @@ CFG_TEE_FW_MANUFACTURER ?= FW_MAN_UNDEF
+ CFG_REE_FS ?= y
+ 
+ # RPMB file system support
+-CFG_RPMB_FS ?= n
++CFG_RPMB_FS ?= y 
+ 
+ # Device identifier used when CFG_RPMB_FS = y.
+ # The exact meaning of this value is platform-dependent. On Linux, the
+-- 
+2.17.1
+

@@ -1,0 +1,44 @@
+From f5355a9be8dcdb979cc1f52695db88b89c9b2fbb Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 15 Apr 2020 15:34:56 +0200
+Subject: [PATCH 40/87] MMIOT-461: Add CFG_RPMB_DISABLE_HASH_DB
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/tee/tee_ree_fs.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/core/tee/tee_ree_fs.c b/core/tee/tee_ree_fs.c
+index 6ad2cb6b..33711bdc 100644
+--- a/core/tee/tee_ree_fs.c
++++ b/core/tee/tee_ree_fs.c
+@@ -469,7 +469,7 @@ static const struct tee_fs_dirfile_operations ree_dirf_ops = {
+ static struct tee_fs_dirfile_dirh *ree_fs_dirh;
+ static size_t ree_fs_dirh_refcount;
+ 
+-#ifdef CFG_RPMB_FS
++#if defined(CFG_RPMB_FS) && !defined(CFG_RPMB_DISABLE_HASH_DB)
+ static struct tee_file_handle *ree_fs_rpmb_fh;
+ 
+ static TEE_Result open_dirh(struct tee_fs_dirfile_dirh **dirh)
+@@ -522,7 +522,7 @@ static void close_dirh(struct tee_fs_dirfile_dirh **dirh)
+ 	rpmb_fs_ops.close(&ree_fs_rpmb_fh);
+ }
+ 
+-#else /*!CFG_RPMB_FS*/
++#else /*!CFG_RPMB_FS || CFG_RPMB_DISABLE_HASH_DB*/
+ static TEE_Result open_dirh(struct tee_fs_dirfile_dirh **dirh)
+ {
+ 	TEE_Result res;
+@@ -544,7 +544,7 @@ static void close_dirh(struct tee_fs_dirfile_dirh **dirh)
+ 	tee_fs_dirfile_close(*dirh);
+ 	*dirh = NULL;
+ }
+-#endif /*!CFG_RPMB_FS*/
++#endif /*!CFG_RPMB_FS || CFG_RPMB_DISABLE_HASH_DB*/
+ 
+ static TEE_Result get_dirh(struct tee_fs_dirfile_dirh **dirh)
+ {
+-- 
+2.17.1
+

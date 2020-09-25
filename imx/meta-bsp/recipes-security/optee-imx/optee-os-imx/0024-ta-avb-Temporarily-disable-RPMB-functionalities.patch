@@ -1,0 +1,183 @@
+From 97fde2dd34a815e3a22c41bff42b4cb34eea79da Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Tue, 19 Feb 2019 17:18:01 -0500
+Subject: [PATCH 24/87] ta/avb: Temporarily disable RPMB functionalities
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ ta/avb/entry.c | 42 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/ta/avb/entry.c b/ta/avb/entry.c
+index 8f69e155..9a8bf21b 100644
+--- a/ta/avb/entry.c
++++ b/ta/avb/entry.c
+@@ -8,6 +8,8 @@
+ #include <string.h>
+ #include <util.h>
+ 
++#define AVB_WITHOUT_RPMB 1
++
+ #define DEFAULT_LOCK_STATE	0
+ 
+ static const uint32_t storageid = TEE_STORAGE_PRIVATE_RPMB;
+@@ -76,15 +78,23 @@ static TEE_Result read_rb_idx(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ 						TEE_PARAM_TYPE_VALUE_OUTPUT,
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE);
++#ifndef AVB_WITHOUT_RPMB
+ 	size_t slot_offset;
+ 	uint64_t idx;
+ 	uint32_t count;
+ 	TEE_Result res;
+ 	TEE_ObjectHandle h;
++#endif
+ 
+ 	if (pt != exp_pt)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
++#ifdef AVB_WITHOUT_RPMB
++	/* Rollback index is hardcoded to 0. */
++	params[1].value.a = 0;
++	params[1].value.b = 0;
++	return TEE_SUCCESS;
++#else
+ 	res = get_slot_offset(params[0].value.a, &slot_offset);
+ 	if (res)
+ 		return res;
+@@ -123,6 +133,7 @@ static TEE_Result read_rb_idx(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ out:
+ 	TEE_CloseObject(h);
+ 	return res;
++#endif
+ }
+ 
+ static TEE_Result write_rb_idx(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+@@ -131,16 +142,22 @@ static TEE_Result write_rb_idx(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ 						TEE_PARAM_TYPE_VALUE_INPUT,
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE);
++#ifndef AVB_WITHOUT_RPMB
+ 	size_t slot_offset;
+ 	uint64_t widx;
+ 	uint64_t idx;
+ 	uint32_t count;
+ 	TEE_Result res;
+ 	TEE_ObjectHandle h;
++#endif
+ 
+ 	if (pt != exp_pt)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
++#ifdef AVB_WITHOUT_RPMB
++    /* Pretend the rollback index has been updated. */
++    return TEE_SUCCESS;
++#else
+ 	res = get_slot_offset(params[0].value.a, &slot_offset);
+ 	if (res)
+ 		return res;
+@@ -173,6 +190,7 @@ static TEE_Result write_rb_idx(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ out:
+ 	TEE_CloseObject(h);
+ 	return res;
++#endif
+ }
+ 
+ static TEE_Result read_lock_state(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+@@ -181,14 +199,21 @@ static TEE_Result read_lock_state(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE);
++#ifndef AVB_WITHOUT_RPMB
+ 	uint32_t lock_state;
+ 	uint32_t count;
+ 	TEE_Result res;
+ 	TEE_ObjectHandle h;
++#endif
+ 
+ 	if (pt != exp_pt)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
++#ifdef AVB_WITHOUT_RPMB
++	// Lock mode is hardcoded to 'locked'
++	params[0].value.a = 1;
++	return TEE_SUCCESS;
++#else
+ 	res = open_rb_state(DEFAULT_LOCK_STATE, &h);
+ 	if (res)
+ 		return res;
+@@ -208,7 +233,9 @@ static TEE_Result read_lock_state(uint32_t pt, TEE_Param params[TEE_NUM_PARAMS])
+ 	params[0].value.a = lock_state;
+ out:
+ 	TEE_CloseObject(h);
++
+ 	return res;
++#endif
+ }
+ 
+ static TEE_Result write_lock_state(uint32_t pt,
+@@ -218,15 +245,21 @@ static TEE_Result write_lock_state(uint32_t pt,
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE,
+ 						TEE_PARAM_TYPE_NONE);
++#ifndef AVB_WITHOUT_RPMB
+ 	uint32_t wlock_state;
+ 	uint32_t lock_state;
+ 	uint32_t count;
+ 	TEE_Result res;
+ 	TEE_ObjectHandle h;
++#endif
+ 
+ 	if (pt != exp_pt)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 
++#ifdef AVB_WITHOUT_RPMB
++	/* Pretend that the lock mode has been updated. */
++	return TEE_SUCCESS;
++#else
+ 	wlock_state = params[0].value.a;
+ 
+ 	res = open_rb_state(wlock_state, &h);
+@@ -243,11 +276,15 @@ static TEE_Result write_lock_state(uint32_t pt,
+ out:
+ 	TEE_CloseObject(h);
+ 	return res;
++#endif
+ }
+ 
+ static TEE_Result write_persist_value(uint32_t pt,
+ 				      TEE_Param params[TEE_NUM_PARAMS])
+ {
++#ifdef AVB_WITHOUT_RPMB
++	return TEE_ERROR_NOT_SUPPORTED;
++#else
+ 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+ 						TEE_PARAM_TYPE_MEMREF_INPUT,
+ 						TEE_PARAM_TYPE_NONE,
+@@ -285,11 +322,15 @@ static TEE_Result write_persist_value(uint32_t pt,
+ 	TEE_CloseObject(h);
+ 
+ 	return res;
++#endif
+ }
+ 
+ static TEE_Result read_persist_value(uint32_t pt,
+ 				      TEE_Param params[TEE_NUM_PARAMS])
+ {
++#ifdef AVB_WITHOUT_RPMB
++	return TEE_ERROR_NOT_SUPPORTED;
++#else
+ 	const uint32_t exp_pt = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+ 						TEE_PARAM_TYPE_MEMREF_INOUT,
+ 						TEE_PARAM_TYPE_NONE,
+@@ -335,6 +376,7 @@ out:
+ 	TEE_CloseObject(h);
+ 
+ 	return res;
++#endif
+ }
+ 
+ TEE_Result TA_CreateEntryPoint(void)
+-- 
+2.17.1
+

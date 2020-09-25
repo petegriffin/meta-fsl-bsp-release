@@ -1,0 +1,33 @@
+From 06bb46b649bf7af0bc222d9d5e0331b233c94daf Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 21 Apr 2020 18:51:53 +0200
+Subject: [PATCH 41/87] crypto: caam: disable DH
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index a81cd501..369722bf 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -95,7 +95,6 @@ endif
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP)), y)
+ $(eval $(call cryphw-enable-drv-hw, MP))
+-$(eval $(call cryphw-enable-drv-hw, DH))
+ CFG_PTA_MP ?= y
+ endif
+ 
+@@ -103,6 +102,7 @@ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP) $(CFG_MX8MQ) $(CFG_MX8MM)), y)
+ $(eval $(call cryphw-enable-drv-hw, ECC))
+ $(eval $(call cryphw-enable-drv-hw, RSA))
++$(eval $(call cryphw-enable-drv-hw, DH))
+ endif
+ 
+ $(call force, CFG_NXP_CAAM_ACIPHER_DRV, $(call cryphw-one-enabled, ECC RSA DH))
+-- 
+2.17.1
+

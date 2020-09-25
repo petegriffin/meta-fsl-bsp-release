@@ -1,0 +1,1098 @@
+From c8438c4d98003bf65b5f5cebdc0a9d4be7d556f8 Mon Sep 17 00:00:00 2001
+From: Remi Koman <remi.koman@nxp.com>
+Date: Fri, 13 Mar 2020 16:07:11 +0100
+Subject: [PATCH 58/87] TEE-510 drivers: caam: add HAL for imx8qm and imx8qxp
+
+Add CAAM HAL for i.MX8QM and i.MX8QXP socs.
+SCU drivers is used for some init functions.
+
+Signed-off-by: Remi Koman <remi.koman@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk                |  7 ---
+ core/arch/arm/plat-imx/crypto_conf.mk         | 25 +++++++----
+ core/arch/arm/plat-imx/registers/imx8q.h      | 18 ++++----
+ core/drivers/crypto/caam/acipher/caam_dh.c    | 10 ++---
+ core/drivers/crypto/caam/acipher/caam_ecc.c   |  7 +--
+ core/drivers/crypto/caam/acipher/caam_math.c  |  7 +--
+ core/drivers/crypto/caam/acipher/caam_rsa.c   |  7 +--
+ core/drivers/crypto/caam/caam_ctrl.c          | 12 ++---
+ core/drivers/crypto/caam/caam_rng.c           |  9 ++--
+ core/drivers/crypto/caam/hal/common/hal_cfg.c |  4 +-
+ core/drivers/crypto/caam/hal/common/hal_rng.c | 10 ++---
+ .../drivers/crypto/caam/hal/imx_6_7/hal_cfg.c | 12 +++++
+ .../drivers/crypto/caam/hal/imx_6_7/hal_rng.c | 13 ++++++
+ core/drivers/crypto/caam/hal/imx_6_7/sub.mk   |  2 +
+ core/drivers/crypto/caam/hal/imx_8m/hal_cfg.c | 12 +++++
+ core/drivers/crypto/caam/hal/imx_8m/hal_rng.c | 13 ++++++
+ core/drivers/crypto/caam/hal/imx_8m/sub.mk    |  2 +
+ core/drivers/crypto/caam/hal/imx_8q/hal_cfg.c | 15 +++++++
+ core/drivers/crypto/caam/hal/imx_8q/hal_clk.c | 13 ++++++
+ .../drivers/crypto/caam/hal/imx_8q/hal_ctrl.c | 14 ++++++
+ core/drivers/crypto/caam/hal/imx_8q/hal_jr.c  | 44 +++++++++++++++++++
+ core/drivers/crypto/caam/hal/imx_8q/hal_rng.c | 25 +++++++++++
+ .../caam/hal/imx_8q/registers/ctrl_regs.h     | 41 +++++++++++++++++
+ core/drivers/crypto/caam/hal/imx_8q/sub.mk    |  9 ++++
+ core/drivers/crypto/caam/hal/ls/hal_cfg.c     | 12 +++++
+ core/drivers/crypto/caam/hal/ls/hal_rng.c     | 15 +++++++
+ core/drivers/crypto/caam/hal/ls/sub.mk        |  2 +
+ core/drivers/crypto/caam/hal/sub.mk           |  3 ++
+ core/drivers/crypto/caam/hash/caam_hash.c     |  7 +--
+ core/drivers/crypto/caam/hash/caam_hash_mac.c |  7 +--
+ .../crypto/caam/include/caam_acipher.h        | 28 +++++++-----
+ .../crypto/caam/include/caam_hal_cfg.h        | 11 ++++-
+ .../crypto/caam/include/caam_hal_rng.h        | 14 +++++-
+ core/drivers/crypto/caam/include/caam_hash.h  | 14 +++---
+ core/drivers/crypto/caam/include/caam_jr.h    |  3 +-
+ core/drivers/crypto/caam/include/caam_sm.h    |  4 +-
+ .../drivers/crypto/caam/include/caam_status.h | 23 +++++-----
+ 37 files changed, 377 insertions(+), 97 deletions(-)
+ create mode 100644 core/drivers/crypto/caam/hal/imx_6_7/hal_cfg.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_6_7/hal_rng.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8m/hal_cfg.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8m/hal_rng.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/hal_cfg.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/hal_clk.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/hal_ctrl.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/hal_jr.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/hal_rng.c
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/registers/ctrl_regs.h
+ create mode 100644 core/drivers/crypto/caam/hal/imx_8q/sub.mk
+ create mode 100644 core/drivers/crypto/caam/hal/ls/hal_cfg.c
+ create mode 100644 core/drivers/crypto/caam/hal/ls/hal_rng.c
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 0da78f9f..2234424e 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -184,7 +184,6 @@ $(call force,CFG_IMX_SNVS,n)
+ CFG_IMX_LPUART ?= y
+ CFG_DRAM_BASE ?= 0x80000000
+ CFG_TEE_CORE_NB_CORE ?= 6
+-$(call force,CFG_NXP_CAAM,n)
+ $(call force,CFG_TZC380,n)
+ else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8qx-flavorlist)))
+ $(call force,CFG_MX8QX,y)
+@@ -193,7 +192,6 @@ $(call force,CFG_IMX_SNVS,n)
+ CFG_IMX_LPUART ?= y
+ CFG_DRAM_BASE ?= 0x80000000
+ CFG_TEE_CORE_NB_CORE ?= 4
+-$(call force,CFG_NXP_CAAM,n)
+ $(call force,CFG_TZC380,n)
+ else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8dxl-flavorlist)))
+ $(call force,CFG_MX8DXL,y)
+@@ -475,11 +473,6 @@ CFG_MMAP_REGIONS ?= 24
+ # ones forced to be disabled
+ CFG_NXP_CAAM ?= y
+ 
+-# Disable CAAM driver for MX8Q
+-ifneq (,$(filter y, $(CFG_MX8QM) $(CFG_MX8QX)))
+-CFG_NXP_CAAM = n
+-endif
+-
+ ifeq ($(CFG_NXP_CAAM),y)
+ # As NXP CAAM Driver is enabled, disable the small local CAAM driver
+ # used just to release Job Rings to Non-Secure world
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 97954306..21f3911c 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -28,30 +28,39 @@ CFG_DBG_CAAM_TRACE ?= 0x2
+ CFG_DBG_CAAM_DESC ?= 0x0
+ CFG_DBG_CAAM_BUF ?= 0x0
+ 
+-#
++ifeq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX)),y)
+ # Due to the CAAM DMA behaviour on iMX8QM & iMX8QX, 4 bytes need to be add to
+ # the buffer size when aligned memory allocation is done
+-#
+-ifeq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX)),y)
+ $(call force, CFG_CAAM_SIZE_ALIGN,4)
+-else
++#
++# CAAM Job Ring configuration
++#  - Normal boot settings
++#  - HAB support boot settings
++#
++$(call force, CFG_JR_BLOCK_SIZE,0x10000)
++$(call force,CFG_JR_INDEX,2)  # Job Ring 2
++$(call force,CFG_JR_INT,485)  # CAAM_INT2 = 485
++else ifneq (,$(filter y, $(CFG_MX8MM) $(CFG_MX8MN) $(CFG_MX8MP) $(CFG_MX8MQ)))
+ $(call force, CFG_CAAM_SIZE_ALIGN,1)
+-endif
+-
+ #
+ # CAAM Job Ring configuration
+ #  - Normal boot settings
+ #  - HAB support boot settings
+ #
+ $(call force, CFG_JR_BLOCK_SIZE,0x1000)
+-
+-ifneq (,$(filter y, $(CFG_MX8MM) $(CFG_MX8MN) $(CFG_MX8MP) $(CFG_MX8MQ)))
+ # On i.MX8 mscale devices OP-TEE runs before u-boot.
+ # HAB can still be reuse in u-boot to authenticate linux
+ # Use another Job ring other than the one used by HAB.
+ $(call force, CFG_JR_INDEX,2)  # Default JR index used
+ $(call force, CFG_JR_INT,146)  # Default JR IT Number (114 + 32) = 146
+ else
++$(call force, CFG_CAAM_SIZE_ALIGN,1)
++#
++# CAAM Job Ring configuration
++#  - Normal boot settings
++#  - HAB support boot settings
++#
++$(call force, CFG_JR_BLOCK_SIZE,0x1000)
+ $(call force, CFG_JR_INDEX,0)  # Default JR index used
+ $(call force, CFG_JR_INT,137)  # Default JR IT Number (105 + 32) = 137
+ endif
+diff --git a/core/arch/arm/plat-imx/registers/imx8q.h b/core/arch/arm/plat-imx/registers/imx8q.h
+index dd0b1ba2..da01ce05 100644
+--- a/core/arch/arm/plat-imx/registers/imx8q.h
++++ b/core/arch/arm/plat-imx/registers/imx8q.h
+@@ -1,17 +1,19 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  */
+ 
+ #ifndef __IMX8Q_H__
+ #define __IMX8Q_H__
+ 
+-#define GICD_BASE	0x51a00000
+-#define GICR_BASE	0x51b00000
+-#define UART0_BASE	0x5a060000
+-#define UART1_BASE	0x5a070000
+-#define UART2_BASE	0x5a080000
+-#define UART3_BASE	0x5a090000
+-#define CAAM_BASE	0x30900000
++#define GICD_BASE	   0x51a00000
++#define GICR_BASE	   0x51b00000
++#define UART0_BASE	   0x5a060000
++#define UART1_BASE	   0x5a070000
++#define UART2_BASE	   0x5a080000
++#define UART3_BASE	   0x5a090000
++#define SC_IPC_BASE_SECURE 0x5d1b0000
++#define CAAM_BASE	   0x31400000
++#define SECMEM_BASE	   0x31800000
+ 
+ #endif /* __IMX8Q_H__ */
+diff --git a/core/drivers/crypto/caam/acipher/caam_dh.c b/core/drivers/crypto/caam/acipher/caam_dh.c
+index 60f76f63..b876f6f3 100644
+--- a/core/drivers/crypto/caam/acipher/caam_dh.c
++++ b/core/drivers/crypto/caam/acipher/caam_dh.c
+@@ -514,16 +514,12 @@ static struct drvcrypt_dh driver_dh = {
+ 	.shared_secret = do_shared_secret,
+ };
+ 
+-/*
+- * Initialize the DH module
+- *
+- * @ctrl_addr   Controller base address
+- */
+-enum caam_status caam_dh_init(vaddr_t ctrl_addr)
++enum caam_status caam_dh_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	if (caam_hal_ctrl_pknum(ctrl_addr))
++	if (caam_hal_ctrl_pknum(jr_base))
+ 		if (drvcrypt_register_dh(&driver_dh) == TEE_SUCCESS)
+ 			retstatus = CAAM_NO_ERROR;
+ 
+diff --git a/core/drivers/crypto/caam/acipher/caam_ecc.c b/core/drivers/crypto/caam/acipher/caam_ecc.c
+index 8e36a410..4bf357bd 100644
+--- a/core/drivers/crypto/caam/acipher/caam_ecc.c
++++ b/core/drivers/crypto/caam/acipher/caam_ecc.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Implementation of ECC functions
+  */
+@@ -878,11 +878,12 @@ static struct drvcrypt_ecc driver_ecc = {
+ 	.shared_secret = &do_shared_secret,
+ };
+ 
+-enum caam_status caam_ecc_init(vaddr_t ctrl_addr)
++enum caam_status caam_ecc_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	if (caam_hal_ctrl_pknum(ctrl_addr))
++	if (caam_hal_ctrl_pknum(jr_base))
+ 		if (drvcrypt_register_ecc(&driver_ecc) == TEE_SUCCESS)
+ 			retstatus = CAAM_NO_ERROR;
+ 
+diff --git a/core/drivers/crypto/caam/acipher/caam_math.c b/core/drivers/crypto/caam/acipher/caam_math.c
+index 86aab962..e179a5a9 100644
+--- a/core/drivers/crypto/caam/acipher/caam_math.c
++++ b/core/drivers/crypto/caam/acipher/caam_math.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Mathematical Operation manager.
+  *         Implementation of Mathematical operation using CAAM's MATH function
+@@ -205,11 +205,12 @@ static struct drvcrypt_math driver_math = {
+ 	.xor_mod_n = &do_xor_mod_n,
+ };
+ 
+-enum caam_status caam_math_init(vaddr_t ctrl_addr __unused)
++enum caam_status caam_math_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	if (caam_hal_ctrl_pknum(ctrl_addr))
++	if (caam_hal_ctrl_pknum(jr_base))
+ 		if (!drvcrypt_register_math(&driver_math))
+ 			retstatus = CAAM_NO_ERROR;
+ 
+diff --git a/core/drivers/crypto/caam/acipher/caam_rsa.c b/core/drivers/crypto/caam/acipher/caam_rsa.c
+index df160c8c..f6d08713 100644
+--- a/core/drivers/crypto/caam/acipher/caam_rsa.c
++++ b/core/drivers/crypto/caam/acipher/caam_rsa.c
+@@ -1623,12 +1623,13 @@ static struct drvcrypt_rsa driver_rsa = {
+ 	.ssa_verify = NULL,
+ };
+ 
+-enum caam_status caam_rsa_init(vaddr_t ctrl_addr)
++enum caam_status caam_rsa_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	if (caam_hal_ctrl_pknum(ctrl_addr)) {
+-		caam_era = caam_hal_ctrl_era(ctrl_addr);
++	if (caam_hal_ctrl_pknum(jr_base)) {
++		caam_era = caam_hal_ctrl_era(jr_base);
+ 		RSA_TRACE("CAAM Era %d", caam_era);
+ 
+ 		if (!drvcrypt_register_rsa(&driver_rsa))
+diff --git a/core/drivers/crypto/caam/caam_ctrl.c b/core/drivers/crypto/caam/caam_ctrl.c
+index 139696cc..dc893343 100644
+--- a/core/drivers/crypto/caam/caam_ctrl.c
++++ b/core/drivers/crypto/caam/caam_ctrl.c
+@@ -77,14 +77,14 @@ TEE_Result crypto_driver_init(void)
+ 	}
+ 
+ 	/* Initialize the Hash Module */
+-	retstatus = caam_hash_init(jrcfg.base);
++	retstatus = caam_hash_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+ 	}
+ 
+ 	/* Initialize the Hmac Module */
+-	retstatus = caam_hmac_init(jrcfg.base);
++	retstatus = caam_hmac_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+@@ -105,28 +105,28 @@ TEE_Result crypto_driver_init(void)
+ 	}
+ 
+ 	/* Initialize the MATH Module */
+-	retstatus = caam_math_init(jrcfg.base);
++	retstatus = caam_math_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+ 	}
+ 
+ 	/* Initialize the ECC Module */
+-	retstatus = caam_ecc_init(jrcfg.base);
++	retstatus = caam_ecc_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+ 	}
+ 
+ 	/* Initialize the RSA Module */
+-	retstatus = caam_rsa_init(jrcfg.base);
++	retstatus = caam_rsa_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+ 	}
+ 
+ 	/* Initialize the DH Module */
+-	retstatus = caam_dh_init(jrcfg.base);
++	retstatus = caam_dh_init(&jrcfg);
+ 	if (retstatus != CAAM_NO_ERROR) {
+ 		retresult = TEE_ERROR_GENERIC;
+ 		goto exit_init;
+diff --git a/core/drivers/crypto/caam/caam_rng.c b/core/drivers/crypto/caam/caam_rng.c
+index fb5e3de4..1cea1f77 100644
+--- a/core/drivers/crypto/caam/caam_rng.c
++++ b/core/drivers/crypto/caam/caam_rng.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /**
+- * Copyright 2017-2019 NXP
++ * Copyright 2017-2020 NXP
+  *
+  * Brief   CAAM Random Number Generator manager.
+  *         Implementation of RNG functions.
+@@ -428,11 +428,10 @@ enum caam_status caam_rng_instantiation(void)
+ 	RNG_TRACE("RNG Instantation");
+ 
+ 	/* Check if RNG is already instantiated */
+-	if (caam_hal_rng_instantiated(rng_privdata->baseaddr)) {
+-		RNG_TRACE("RNG already instantiated");
+-		retstatus = CAAM_NO_ERROR;
++	retstatus = caam_hal_rng_instantiated(rng_privdata->baseaddr);
++	/* RNG is already instantiated or an error occurred */
++	if (retstatus != CAAM_NOT_INIT)
+ 		goto end_inst;
+-	}
+ 
+ 	/*
+ 	 * RNG needs to be instantiated. Allocate and prepare the
+diff --git a/core/drivers/crypto/caam/hal/common/hal_cfg.c b/core/drivers/crypto/caam/hal/common/hal_cfg.c
+index d8dedcfe..51752bb8 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_cfg.c
++++ b/core/drivers/crypto/caam/hal/common/hal_cfg.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2017-2019 NXP
++ * Copyright 2017-2020 NXP
+  *
+  * Brief   CAAM Configuration.
+  */
+@@ -78,7 +78,7 @@ exit_get_conf:
+ 	return retstatus;
+ }
+ 
+-void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg)
++void caam_hal_cfg_common_setup_nsjobring(struct caam_jrcfg *jrcfg)
+ {
+ 	enum caam_status status = CAAM_FAILURE;
+ 	paddr_t jr_offset = 0;
+diff --git a/core/drivers/crypto/caam/hal/common/hal_rng.c b/core/drivers/crypto/caam/hal/common/hal_rng.c
+index 9e4b96b0..03a34114 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_rng.c
++++ b/core/drivers/crypto/caam/hal/common/hal_rng.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Random Number Generator Hardware Abstration Layer.
+  *         Implementation of primitives to access HW.
+@@ -11,7 +11,7 @@
+ #include <registers/rng_regs.h>
+ #include <registers/version_regs.h>
+ 
+-bool caam_hal_rng_instantiated(vaddr_t baseaddr)
++enum caam_status caam_hal_common_rng_instantiated(vaddr_t baseaddr)
+ {
+ 	uint32_t chavid_ls = 0;
+ 	uint32_t nb_sh = 0;
+@@ -21,7 +21,7 @@ bool caam_hal_rng_instantiated(vaddr_t baseaddr)
+ 
+ 	/* RNG version < 4 and RNG state handle is already instantiated */
+ 	if (GET_CHAVID_LS_RNGVID(chavid_ls) < 4)
+-		return true;
++		return CAAM_NO_ERROR;
+ 
+ 	/* Get the Number of State Handles */
+ 	nb_sh = caam_hal_rng_get_nb_sh(baseaddr);
+@@ -30,9 +30,9 @@ bool caam_hal_rng_instantiated(vaddr_t baseaddr)
+ 	status = caam_hal_rng_get_sh_status(baseaddr);
+ 
+ 	if (status != GENMASK_32(nb_sh - 1, 0))
+-		return false;
++		return CAAM_NOT_INIT;
+ 
+-	return true;
++	return CAAM_NO_ERROR;
+ }
+ 
+ uint32_t caam_hal_rng_get_nb_sh(vaddr_t baseaddr)
+diff --git a/core/drivers/crypto/caam/hal/imx_6_7/hal_cfg.c b/core/drivers/crypto/caam/hal/imx_6_7/hal_cfg.c
+new file mode 100644
+index 00000000..bbb3dd1c
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_6_7/hal_cfg.c
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Configuration.
++ */
++#include <caam_hal_cfg.h>
++
++void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg)
++{
++	caam_hal_cfg_common_setup_nsjobring(jrcfg);
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_6_7/hal_rng.c b/core/drivers/crypto/caam/hal/imx_6_7/hal_rng.c
+new file mode 100644
+index 00000000..d4882e13
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_6_7/hal_rng.c
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Random Number Generator Hardware Abstration Layer.
++ *         Implementation of primitives to access HW.
++ */
++#include <caam_hal_rng.h>
++
++enum caam_status caam_hal_rng_instantiated(vaddr_t baseaddr)
++{
++	return caam_hal_common_rng_instantiated(baseaddr);
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_6_7/sub.mk b/core/drivers/crypto/caam/hal/imx_6_7/sub.mk
+index b306fdc4..02e16470 100644
+--- a/core/drivers/crypto/caam/hal/imx_6_7/sub.mk
++++ b/core/drivers/crypto/caam/hal/imx_6_7/sub.mk
+@@ -7,3 +7,5 @@ srcs-$(CFG_MX7) += hal_clk_mx7.c
+ srcs-$(CFG_MX7ULP) += hal_clk_mx7ulp.c
+ srcs-y += hal_ctrl.c
+ srcs-y += hal_jr.c
++srcs-y += hal_cfg.c
++srcs-y += hal_rng.c
+diff --git a/core/drivers/crypto/caam/hal/imx_8m/hal_cfg.c b/core/drivers/crypto/caam/hal/imx_8m/hal_cfg.c
+new file mode 100644
+index 00000000..bbb3dd1c
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8m/hal_cfg.c
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Configuration.
++ */
++#include <caam_hal_cfg.h>
++
++void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg)
++{
++	caam_hal_cfg_common_setup_nsjobring(jrcfg);
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8m/hal_rng.c b/core/drivers/crypto/caam/hal/imx_8m/hal_rng.c
+new file mode 100644
+index 00000000..d4882e13
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8m/hal_rng.c
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Random Number Generator Hardware Abstration Layer.
++ *         Implementation of primitives to access HW.
++ */
++#include <caam_hal_rng.h>
++
++enum caam_status caam_hal_rng_instantiated(vaddr_t baseaddr)
++{
++	return caam_hal_common_rng_instantiated(baseaddr);
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8m/sub.mk b/core/drivers/crypto/caam/hal/imx_8m/sub.mk
+index 5231cce6..72f3eabf 100644
+--- a/core/drivers/crypto/caam/hal/imx_8m/sub.mk
++++ b/core/drivers/crypto/caam/hal/imx_8m/sub.mk
+@@ -5,3 +5,5 @@ incdirs-y += .
+ srcs-y += hal_clk.c
+ srcs-y += hal_ctrl.c
+ srcs-y += hal_jr.c
++srcs-y += hal_cfg.c
++srcs-y += hal_rng.c
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/hal_cfg.c b/core/drivers/crypto/caam/hal/imx_8q/hal_cfg.c
+new file mode 100644
+index 00000000..505038a4
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/hal_cfg.c
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Configuration.
++ */
++#include <caam_hal_cfg.h>
++
++/*
++ * Non-secure job ring configuration is done by boot software and could not
++ * be changed.
++ */
++void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg __unused)
++{
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/hal_clk.c b/core/drivers/crypto/caam/hal/imx_8q/hal_clk.c
+new file mode 100644
+index 00000000..0c704ee6
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/hal_clk.c
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Clock functions.
++ */
++#include <caam_hal_clk.h>
++#include <compiler.h>
++
++/* Nothing to do, clocks are enabled by SCU */
++void caam_hal_clk_enable(bool enable __unused)
++{
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/hal_ctrl.c b/core/drivers/crypto/caam/hal/imx_8q/hal_ctrl.c
+new file mode 100644
+index 00000000..345d0a12
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/hal_ctrl.c
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Controller Hardware Abstration Layer.\n
++ *	   Implementation of primitives to access HW
++ */
++#include <caam_hal_ctrl.h>
++#include <compiler.h>
++
++/* Nothing to do, can't access to MCFGR register (Only accessible by SECO) */
++void caam_hal_ctrl_init(vaddr_t baseaddr __unused)
++{
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/hal_jr.c b/core/drivers/crypto/caam/hal/imx_8q/hal_jr.c
+new file mode 100644
+index 00000000..cc070a51
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/hal_jr.c
+@@ -0,0 +1,44 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Job Rings Hardware Abstration Layer.
++ *	   Implementation of primitives to access HW
++ */
++#include <caam_common.h>
++#include <caam_hal_jr.h>
++#include <drivers/sc/sc_api.h>
++#include <tee_api_types.h>
++#include <trace.h>
++
++/* For imx8q socs this is done using SCFW API. */
++enum caam_status caam_hal_jr_setowner(vaddr_t ctrl_base __unused,
++				      paddr_t jr_offset __unused,
++				      enum caam_jr_owner owner __unused)
++{
++	TEE_Result ret = TEE_ERROR_GENERIC;
++
++	/* First initialize the SCU driver */
++	ret = sc_driver_init();
++	if (ret != TEE_SUCCESS) {
++		EMSG("SCU driver init failed");
++		return CAAM_FAILURE;
++	}
++
++	ret = sc_rm_enable_jr(CFG_JR_INDEX);
++	if (ret != TEE_SUCCESS) {
++		EMSG("Can't enable CAAM JR resource");
++		return CAAM_FAILURE;
++	} else {
++		return CAAM_NO_ERROR;
++	}
++}
++
++/*
++ * Nothing to do. This functions is used in hal_cfg_setup_nsjobring function
++ * which is not used for imx8q socs
++ */
++void caam_hal_jr_prepare_backup(vaddr_t ctrl_base __unused,
++				paddr_t jr_offset __unused)
++{
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/hal_rng.c b/core/drivers/crypto/caam/hal/imx_8q/hal_rng.c
+new file mode 100644
+index 00000000..0776f3b1
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/hal_rng.c
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Random Number Generator Hardware Abstration Layer.
++ *         Implementation of primitives to access HW.
++ */
++#include <caam_hal_rng.h>
++#include <caam_status.h>
++#include <drivers/sc/sc_api.h>
++#include <tee_api_types.h>
++#include <trace.h>
++
++enum caam_status caam_hal_rng_instantiated(vaddr_t baseaddr __unused)
++{
++	TEE_Result ret = TEE_ERROR_GENERIC;
++
++	ret = sc_seco_start_rng();
++	if (ret != TEE_SUCCESS) {
++		EMSG("RNG instantiation failed");
++		return CAAM_FAILURE;
++	} else {
++		return CAAM_NO_ERROR;
++	}
++}
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/registers/ctrl_regs.h b/core/drivers/crypto/caam/hal/imx_8q/registers/ctrl_regs.h
+new file mode 100644
+index 00000000..bc3c976e
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/registers/ctrl_regs.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   Control Registers.
++ */
++#ifndef __CTRL_REGS_H__
++#define __CTRL_REGS_H__
++
++/* Global includes */
++#include <util.h>
++
++/* Job Ring x MID */
++#define JRxDID_SIZE    0x8
++#define JR0DID_MS      0x0010
++#define JR0DID_LS      0x0014
++#define JRxDID_MS(idx) (JR0DID_MS + (idx) * (JRxDID_SIZE))
++#define JRxDID_LS(idx) (JR0DID_LS + (idx) * (JRxDID_SIZE))
++
++#define JRxDID_MS_LDID		 BIT32(31)
++#define JRxDID_MS_PRIM_ICID(val) SHIFT_U32((val) & (0x3FF), 19)
++#define JRxDID_MS_LAMTD		 BIT32(17)
++#define JRxDID_MS_AMTD		 BIT32(16)
++#define JRxDID_MS_TZ_OWN	 BIT32(15)
++#define JRxDID_MS_PRIM_TZ	 BIT32(4)
++#define JRxDID_MS_PRIM_DID(val)	 SHIFT_U32((val) & (0xF), 0)
++
++/* Security Configuration */
++#define SCFGR		 0x000C
++#define BS_SCFGR_MPCURVE 28
++#define BM_SCFGR_MPCURVE SHIFT_U32(0xF, BS_SCFGR_MPCURVE)
++#define BM_SCFGR_MPMRL	 BIT32(26)
++
++/* Secure Memory Virtual Base Address */
++#define JRX_SMVBAR(idx) (0x0184 + (idx) * (8))
++
++/* Manufacturing Protection Message */
++#define MPMR	    0x0380
++#define MPMR_NB_REG 0x20
++
++#endif /* __CTRL_REGS_H__ */
+diff --git a/core/drivers/crypto/caam/hal/imx_8q/sub.mk b/core/drivers/crypto/caam/hal/imx_8q/sub.mk
+new file mode 100644
+index 00000000..72f3eabf
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/imx_8q/sub.mk
+@@ -0,0 +1,9 @@
++incdirs-y += ../common
++incdirs-y += ../../include
++incdirs-y += .
++
++srcs-y += hal_clk.c
++srcs-y += hal_ctrl.c
++srcs-y += hal_jr.c
++srcs-y += hal_cfg.c
++srcs-y += hal_rng.c
+diff --git a/core/drivers/crypto/caam/hal/ls/hal_cfg.c b/core/drivers/crypto/caam/hal/ls/hal_cfg.c
+new file mode 100644
+index 00000000..bbb3dd1c
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/ls/hal_cfg.c
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Configuration.
++ */
++#include <caam_hal_cfg.h>
++
++void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg)
++{
++	caam_hal_cfg_common_setup_nsjobring(jrcfg);
++}
+diff --git a/core/drivers/crypto/caam/hal/ls/hal_rng.c b/core/drivers/crypto/caam/hal/ls/hal_rng.c
+new file mode 100644
+index 00000000..8683e1a3
+--- /dev/null
++++ b/core/drivers/crypto/caam/hal/ls/hal_rng.c
+@@ -0,0 +1,15 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * Brief   CAAM Random Number Generator Hardware Abstration Layer.
++ *         Implementation of primitives to access HW.
++ */
++#include <caam_hal_rng.h>
++#include <caam_status.h>
++#include <types_ext.h>
++
++enum caam_status caam_hal_rng_instantiated(vaddr_t baseaddr)
++{
++	return caam_hal_common_rng_instantiated(baseaddr);
++}
+diff --git a/core/drivers/crypto/caam/hal/ls/sub.mk b/core/drivers/crypto/caam/hal/ls/sub.mk
+index 5231cce6..72f3eabf 100644
+--- a/core/drivers/crypto/caam/hal/ls/sub.mk
++++ b/core/drivers/crypto/caam/hal/ls/sub.mk
+@@ -5,3 +5,5 @@ incdirs-y += .
+ srcs-y += hal_clk.c
+ srcs-y += hal_ctrl.c
+ srcs-y += hal_jr.c
++srcs-y += hal_cfg.c
++srcs-y += hal_rng.c
+diff --git a/core/drivers/crypto/caam/hal/sub.mk b/core/drivers/crypto/caam/hal/sub.mk
+index cba63270..bf7b6cd4 100644
+--- a/core/drivers/crypto/caam/hal/sub.mk
++++ b/core/drivers/crypto/caam/hal/sub.mk
+@@ -7,6 +7,9 @@ endif
+ ifeq ($(filter y, $(CFG_MX8MQ) $(CFG_MX8MM) $(CFG_MX8MN) $(CFG_MX8MP)),y)
+ CAAM_HAL_DIR = imx_8m
+ endif
++ifeq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX)),y)
++CAAM_HAL_DIR = imx_8q
++endif
+ 
+ subdirs-y += common
+ subdirs-y += $(CAAM_HAL_DIR)
+diff --git a/core/drivers/crypto/caam/hash/caam_hash.c b/core/drivers/crypto/caam/hash/caam_hash.c
+index 5100b43e..7aeddf78 100644
+--- a/core/drivers/crypto/caam/hash/caam_hash.c
++++ b/core/drivers/crypto/caam/hash/caam_hash.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  *         Implementation of Hashing functions.
+  */
+@@ -695,11 +695,12 @@ void caam_hash_hmac_copy_state(struct hashctx *dst, struct hashctx *src)
+ 	}
+ }
+ 
+-enum caam_status caam_hash_init(vaddr_t ctrl_addr)
++enum caam_status caam_hash_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_FAILURE;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	caam_hash_limit = caam_hal_ctrl_hash_limit(ctrl_addr);
++	caam_hash_limit = caam_hal_ctrl_hash_limit(jr_base);
+ 
+ 	if (caam_hash_limit != UINT8_MAX) {
+ 		if (drvcrypt_register_hash(&caam_hash_allocate) == TEE_SUCCESS)
+diff --git a/core/drivers/crypto/caam/hash/caam_hash_mac.c b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+index a5f47833..e4e7881e 100644
+--- a/core/drivers/crypto/caam/hash/caam_hash_mac.c
++++ b/core/drivers/crypto/caam/hash/caam_hash_mac.c
+@@ -393,15 +393,16 @@ static TEE_Result caam_hmac_allocate(struct crypto_mac_ctx **ctx, uint32_t algo)
+ 	return TEE_SUCCESS;
+ }
+ 
+-enum caam_status caam_hmac_init(vaddr_t ctrl_addr)
++enum caam_status caam_hmac_init(struct caam_jrcfg *caam_jrcfg)
+ {
+ 	enum caam_status retstatus = CAAM_NO_ERROR;
++	vaddr_t jr_base = caam_jrcfg->base + caam_jrcfg->offset;
+ 
+-	caam_hash_limit = caam_hal_ctrl_hash_limit(ctrl_addr);
++	caam_hash_limit = caam_hal_ctrl_hash_limit(jr_base);
+ 
+ 	if (caam_hash_limit != UINT8_MAX) {
+ 		/* Check if the HW support the HMAC Split key */
+-		if (caam_hal_ctrl_splitkey(ctrl_addr))
++		if (caam_hal_ctrl_splitkey(jr_base))
+ 			if (drvcrypt_register_hmac(&caam_hmac_allocate) !=
+ 			    TEE_SUCCESS)
+ 				retstatus = CAAM_FAILURE;
+diff --git a/core/drivers/crypto/caam/include/caam_acipher.h b/core/drivers/crypto/caam/include/caam_acipher.h
+index b19b79f0..632674f5 100644
+--- a/core/drivers/crypto/caam/include/caam_acipher.h
++++ b/core/drivers/crypto/caam/include/caam_acipher.h
+@@ -14,11 +14,12 @@
+ /*
+  * Initialize the Cipher module
+  *
+- * @ctrl_addr   Controller base address
++ * @caam_jrcfg   JR configuration structure
+  */
+-enum caam_status caam_ecc_init(vaddr_t ctrl_addr);
++enum caam_status caam_ecc_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_ecc_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_ecc_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+@@ -28,11 +29,12 @@ static inline enum caam_status caam_ecc_init(vaddr_t ctrl_addr __unused)
+ /*
+  * Initialize the RSA module
+  *
+- * @ctrl_addr   Controller base address
++ * @caam_jrcfg   JR configuration structure
+  */
+-enum caam_status caam_rsa_init(vaddr_t ctrl_addr);
++enum caam_status caam_rsa_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_rsa_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_rsa_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+@@ -42,11 +44,12 @@ static inline enum caam_status caam_rsa_init(vaddr_t ctrl_addr __unused)
+ /*
+  * Initialize the DH module
+  *
+- * @ctrl_addr   Controller base address
++ * @caam_jrcfg   JR configuration structure
+  */
+-enum caam_status caam_dh_init(vaddr_t ctrl_addr);
++enum caam_status caam_dh_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_dh_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_dh_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+@@ -71,11 +74,12 @@ caam_dsa_init(struct caam_jrcfg *caam_jrcfg __unused)
+ /*
+  * Initialize the MATH module
+  *
+- * @ctrl_addr   Controller base address
++ * @caam_jrcfg   JR configuration structure
+  */
+-enum caam_status caam_math_init(vaddr_t ctrl_addr);
++enum caam_status caam_math_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_math_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_math_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+diff --git a/core/drivers/crypto/caam/include/caam_hal_cfg.h b/core/drivers/crypto/caam/include/caam_hal_cfg.h
+index da2cb083..13941de2 100644
+--- a/core/drivers/crypto/caam/include/caam_hal_cfg.h
++++ b/core/drivers/crypto/caam/include/caam_hal_cfg.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Configuration header.
+  */
+@@ -32,11 +32,20 @@ enum caam_status caam_hal_cfg_get_conf(struct caam_jrcfg *jrcfg);
+ 
+ /*
+  * Setup the Non-Secure Job Ring
++ * Soc specific function
+  *
+  * @jrcfg   Job Ring configuration
+  */
+ void caam_hal_cfg_setup_nsjobring(struct caam_jrcfg *jrcfg);
+ 
++/*
++ * Setup the Non-Secure Job Ring
++ * Common function
++ *
++ * @jrcfg   Job Ring configuration
++ */
++void caam_hal_cfg_common_setup_nsjobring(struct caam_jrcfg *jrcfg);
++
+ #ifdef CFG_DT
+ /*
+  * Returns the Job Ring configuration to be used by the TEE
+diff --git a/core/drivers/crypto/caam/include/caam_hal_rng.h b/core/drivers/crypto/caam/include/caam_hal_rng.h
+index a4e026c8..230ff597 100644
+--- a/core/drivers/crypto/caam/include/caam_hal_rng.h
++++ b/core/drivers/crypto/caam/include/caam_hal_rng.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2019 NXP
++ * Copyright 2019-2020 NXP
+  *
+  * Brief   CAAM Random Number Generator Hardware Abstration Layer.
+  *         Implementation of primitives to access HW
+@@ -8,14 +8,24 @@
+ #ifndef __CAAM_HAL_RNG_H__
+ #define __CAAM_HAL_RNG_H__
+ 
++#include <caam_status.h>
+ #include <types_ext.h>
+ 
+ /*
+  * Returns if all RNG State Handler already instantiated or not
++ * Common function
+  *
+  * @baseaddr  RNG Base Address
+  */
+-bool caam_hal_rng_instantiated(vaddr_t baseaddr);
++enum caam_status caam_hal_common_rng_instantiated(vaddr_t baseaddr);
++
++/*
++ * Returns if all RNG State Handler already instantiated or not
++ * Soc specific function
++ *
++ * @baseaddr  RNG Base Address
++ */
++enum caam_status caam_hal_rng_instantiated(vaddr_t baseaddr);
+ 
+ /*
+  * Returns the number of RNG State Handle
+diff --git a/core/drivers/crypto/caam/include/caam_hash.h b/core/drivers/crypto/caam/include/caam_hash.h
+index 1d2c13c0..97d79508 100644
+--- a/core/drivers/crypto/caam/include/caam_hash.h
++++ b/core/drivers/crypto/caam/include/caam_hash.h
+@@ -1,21 +1,24 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Hash manager header.
+  */
+ #ifndef __CAAM_HASH_H__
+ #define __CAAM_HASH_H__
+ 
++#include <caam_jr.h>
++
+ #ifdef CFG_NXP_CAAM_HASH_DRV
+ /*
+  * Initialize the Hash module
+  *
+  * @ctrl_addr   Controller base address
+  */
+-enum caam_status caam_hash_init(vaddr_t ctrl_addr);
++enum caam_status caam_hash_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_hash_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_hash_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+@@ -27,9 +30,10 @@ static inline enum caam_status caam_hash_init(vaddr_t ctrl_addr __unused)
+  *
+  * @ctrl_addr   Controller base address
+  */
+-enum caam_status caam_hmac_init(vaddr_t ctrl_addr);
++enum caam_status caam_hmac_init(struct caam_jrcfg *caam_jrcfg);
+ #else
+-static inline enum caam_status caam_hmac_init(vaddr_t ctrl_addr __unused)
++static inline enum caam_status
++caam_hmac_init(struct caam_jrcfg *caam_jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+diff --git a/core/drivers/crypto/caam/include/caam_jr.h b/core/drivers/crypto/caam/include/caam_jr.h
+index bf3a6f8b..c8e99f03 100644
+--- a/core/drivers/crypto/caam/include/caam_jr.h
++++ b/core/drivers/crypto/caam/include/caam_jr.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Job Rings module header.
+  */
+@@ -8,6 +8,7 @@
+ #define __CAAM_JR_H__
+ 
+ #include <caam_jr_status.h>
++#include <types_ext.h>
+ 
+ /*
+  * Job context to enqueue/dequeue
+diff --git a/core/drivers/crypto/caam/include/caam_sm.h b/core/drivers/crypto/caam/include/caam_sm.h
+index a48245cf..2020c084 100644
+--- a/core/drivers/crypto/caam/include/caam_sm.h
++++ b/core/drivers/crypto/caam/include/caam_sm.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM Secure Memory module header.
+  */
+@@ -68,5 +68,5 @@ static inline enum caam_status caam_sm_init(struct caam_jrcfg *jrcfg __unused)
+ {
+ 	return CAAM_NO_ERROR;
+ }
+-#endif /* CFG_NXP_CAAM_MP_DRV */
++#endif /* CFG_NXP_CAAM_SM_DRV */
+ #endif /* __CAAM_SM_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_status.h b/core/drivers/crypto/caam/include/caam_status.h
+index 3ddb004c..3ac6ce4e 100644
+--- a/core/drivers/crypto/caam/include/caam_status.h
++++ b/core/drivers/crypto/caam/include/caam_status.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   CAAM driver internal status definition
+  */
+@@ -12,16 +12,17 @@
+  * Internal CAAM Driver status codes
+  */
+ enum caam_status {
+-	CAAM_NO_ERROR = 0,   /* No Error */
+-	CAAM_FAILURE,        /* General failure */
+-	CAAM_NOT_SUPPORTED,  /* Feature not supported */
+-	CAAM_OUT_MEMORY,     /* Out of memory */
+-	CAAM_BAD_PARAM,      /* Bad parameters */
+-	CAAM_BUSY,           /* Operation is not possible, system busy */
+-	CAAM_PENDING,        /* Operation is pending */
+-	CAAM_TIMEOUT,        /* Operation timeout */
+-	CAAM_OUT_OF_BOUND,   /* Value is out of boundary */
+-	CAAM_JOB_STATUS,     /* A job status is available */
++	CAAM_NO_ERROR = 0,  /* No Error */
++	CAAM_FAILURE,	    /* General failure */
++	CAAM_NOT_SUPPORTED, /* Feature not supported */
++	CAAM_OUT_MEMORY,    /* Out of memory */
++	CAAM_BAD_PARAM,	    /* Bad parameters */
++	CAAM_BUSY,	    /* Operation is not possible, system busy */
++	CAAM_PENDING,	    /* Operation is pending */
++	CAAM_TIMEOUT,	    /* Operation timeout */
++	CAAM_OUT_OF_BOUND,  /* Value is out of boundary */
++	CAAM_JOB_STATUS,    /* A job status is available */
++	CAAM_NOT_INIT,	    /* Feature is not initialized */
+ };
+ 
+ #endif /* __CAAM_STATUS_H__ */
+-- 
+2.17.1
+

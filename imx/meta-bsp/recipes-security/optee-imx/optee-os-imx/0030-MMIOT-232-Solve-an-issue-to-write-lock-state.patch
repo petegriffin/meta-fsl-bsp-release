@@ -1,0 +1,54 @@
+From 7e3e49e3a4c33ba5978ffbb004b9ac64cafced41 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Tue, 18 Jun 2019 00:01:44 -0400
+Subject: [PATCH 30/87] MMIOT-232: Solve an issue to write lock state
+
+When writing the lock state, write_lock_state() returns
+TEE_ERROR_ACCESS_CONFLICT. This error occurs because
+TEE_CreatePersistentObject() tries to overwrite the file
+but the file was already opened by TEE_OpenPersistentObject().
+Use TEE_SeekObjectData() and TEE_WriteObjectData() instead.
+
+Note that, when the lock state is updated, the rollback
+indexes are preserved.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ ta/avb/entry.c          | 7 ++++++-
+ ta/avb/include/ta_avb.h | 2 +-
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/ta/avb/entry.c b/ta/avb/entry.c
+index e2559c46..11128254 100644
+--- a/ta/avb/entry.c
++++ b/ta/avb/entry.c
+@@ -273,7 +273,12 @@ static TEE_Result write_lock_state(uint32_t pt,
+ 	if (count == sizeof(lock_state) && lock_state == wlock_state)
+ 		goto out;
+ 
+-	res = create_rb_state(wlock_state, &h);
++	res = TEE_SeekObjectData(h, 0, TEE_DATA_SEEK_SET);
++	if (res)
++		goto out;
++
++	res = TEE_WriteObjectData(h, &wlock_state, sizeof(wlock_state));
++
+ out:
+ 	TEE_CloseObject(h);
+ 	return res;
+diff --git a/ta/avb/include/ta_avb.h b/ta/avb/include/ta_avb.h
+index 45521f75..a3c92628 100644
+--- a/ta/avb/include/ta_avb.h
++++ b/ta/avb/include/ta_avb.h
+@@ -39,7 +39,7 @@
+ /*
+  * Sets the lock state of the device.
+  *
+- * If the lock state is changed all rollback slots will be reset to 0
++ * The rollback slots are preserved.
+  *
+  * in	params[0].value.a:	lock state
+  */
+-- 
+2.17.1
+

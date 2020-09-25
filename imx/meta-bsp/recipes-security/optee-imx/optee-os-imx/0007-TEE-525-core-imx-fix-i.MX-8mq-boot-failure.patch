@@ -1,0 +1,48 @@
+From 694dd03a3a78fb16ff1d672c863fcacc7dd43b5f Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Thu, 12 Mar 2020 20:37:51 +0100
+Subject: [PATCH 07/87] TEE-525 core: imx: fix i.MX 8mq boot failure
+
+Fix regression introduced by th edynamic shared memory addition.
+
+Fixes: dda69050abc9 ("TEE-517 core: imx: Add dynamic shared memory configuration")
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+(cherry picked from commit 25fee73c10f0cf077b6707256ccc1950c1120472)
+---
+ core/arch/arm/plat-imx/main.c            | 4 ++--
+ core/arch/arm/plat-imx/platform_config.h | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/main.c b/core/arch/arm/plat-imx/main.c
+index 7ace565c..349c25c4 100644
+--- a/core/arch/arm/plat-imx/main.c
++++ b/core/arch/arm/plat-imx/main.c
+@@ -126,10 +126,10 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC,
+ 
+ #ifdef DRAM0_NSEC_SIZE
+ register_dynamic_shm(DRAM0_NSEC_BASE, DRAM0_NSEC_SIZE);
+-#endif
+-#ifdef DRAM1_NSEC_SIZE
++#if DRAM1_NSEC_SIZE
+ register_dynamic_shm(DRAM1_NSEC_BASE, DRAM1_NSEC_SIZE);
+ #endif
++#endif
+ 
+ const struct thread_handlers *generic_boot_get_handlers(void)
+ {
+diff --git a/core/arch/arm/plat-imx/platform_config.h b/core/arch/arm/plat-imx/platform_config.h
+index 1d05e426..7032237d 100644
+--- a/core/arch/arm/plat-imx/platform_config.h
++++ b/core/arch/arm/plat-imx/platform_config.h
+@@ -76,7 +76,7 @@
+ #define DRAM0_NSEC_BASE CFG_DRAM_BASE
+ #define DRAM0_NSEC_SIZE (CFG_TZDRAM_START - CFG_DRAM_BASE)
+ #define DRAM1_NSEC_BASE (CFG_TZDRAM_START + 0x2000000)
+-#define DRAM1_NSEC_SIZE (CFG_DDR_SIZE - DRAM1_NSEC_BASE)
++#define DRAM1_NSEC_SIZE ((CFG_DRAM_BASE - DRAM1_NSEC_BASE) + CFG_DDR_SIZE)
+ #endif
+ 
+ #if defined(CFG_IMX_DEK_HAB) && !defined(DRAM0_NSEC_SIZE)
+-- 
+2.17.1
+

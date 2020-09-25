@@ -1,0 +1,316 @@
+From 27eb1aa0f22ae7af0faef218b4fecb952f8f8aef Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Mon, 17 Jun 2019 23:59:25 -0400
+Subject: [PATCH 28/87] MMIOT-232: Allow to block RPMB operations
+
+Implement an API to block the RPMB operations. RPMB operations are typically
+blocked when the device is in unlocked state. This configuration is
+controlled by the Config TA (pseudo TA).
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ core/include/tee/tee_fs.h |   3 +
+ core/tee/tee_rpmb_fs.c    | 147 ++++++++++++++++++++++++++++++++------
+ 2 files changed, 129 insertions(+), 21 deletions(-)
+
+diff --git a/core/include/tee/tee_fs.h b/core/include/tee/tee_fs.h
+index 8ad957e3..d8fecf4f 100644
+--- a/core/include/tee/tee_fs.h
++++ b/core/include/tee/tee_fs.h
+@@ -58,6 +58,9 @@ extern const struct tee_file_operations rpmb_fs_ops;
+ 
+ TEE_Result tee_rpmb_fs_raw_open(const char *fname, bool create,
+ 				struct tee_file_handle **fh);
++
++void tee_rpmb_fs_configure(bool blocked);
++
+ #endif
+ 
+ #endif /*TEE_FS_H*/
+diff --git a/core/tee/tee_rpmb_fs.c b/core/tee/tee_rpmb_fs.c
+index c263e919..8675b9cf 100644
+--- a/core/tee/tee_rpmb_fs.c
++++ b/core/tee/tee_rpmb_fs.c
+@@ -156,6 +156,9 @@ static struct rpmb_fs_parameters *fs_par;
+ #define RPMB_CMD_GET_DEV_INFO_RET_OK     0x00
+ #define RPMB_CMD_GET_DEV_INFO_RET_ERROR  0x01
+ 
++#define TA_AVB_UUID { 0x023f8f1a, 0x292a, 0x432b, \
++		      { 0x8f, 0xc4, 0xde, 0x84, 0x71, 0x35, 0x80, 0x67 } }
++
+ struct rpmb_data_frame {
+ 	uint8_t stuff_bytes[RPMB_STUFF_DATA_SIZE];
+ 	uint8_t key_mac[RPMB_KEY_MAC_SIZE];
+@@ -232,6 +235,20 @@ struct tee_rpmb_ctx {
+ 	bool dev_info_synced;
+ };
+ 
++
++/*
++ * Struct for rpmb configuration.
++ *
++ * @blocked          Flag indicating if the RPMB operations are blocked. RPMB
++ *                   operations are typically blocked when the device is in
++ *                   unlocked state. This configuration is controlled by the
++ *                   Config TA (pseudo TA).
++ */
++struct tee_rpmb_config {
++	bool blocked;
++};
++
++static struct tee_rpmb_config rpmb_config = {false};
+ static struct tee_rpmb_ctx *rpmb_ctx;
+ 
+ /*
+@@ -241,6 +258,55 @@ static struct tee_rpmb_ctx *rpmb_ctx;
+  */
+ static struct mutex rpmb_mutex = MUTEX_INITIALIZER;
+ 
++static bool is_rpmb_blocked(const TEE_UUID *uuid) {
++
++	// The AVB TA can access RPMB even when it is blocked.
++	TEE_UUID whitelisted_ta_uuid[] = {TA_AVB_UUID};
++
++	uint32_t ii = 0;
++	uint32_t count = sizeof(whitelisted_ta_uuid) / sizeof(whitelisted_ta_uuid[0]);
++
++	if(!rpmb_config.blocked) {
++		return false; /* Allowed */
++	}
++
++	if(uuid != NULL) {
++		/* Check if the TA is whitelisted */
++		for(ii = 0; ii < count; ii++)
++		{
++			if(memcmp(uuid, &whitelisted_ta_uuid[ii], sizeof(TEE_UUID)) == 0) {
++				return false; /* Allowed */
++			}
++		}
++	}
++
++	DMSG("RPMB is blocked");
++	return true; /* Blocked */
++}
++
++/*
++ * Acquire RMPB mutex and verify the RPMB configuration. Return an error
++ * when the RPMB operations are blocked.
++ */
++static TEE_Result tee_rpmb_acquire(const TEE_UUID *uuid) {
++	mutex_lock(&rpmb_mutex);
++
++	if(is_rpmb_blocked(uuid)) {
++		mutex_unlock(&rpmb_mutex);
++		return TEE_ERROR_ACCESS_DENIED;
++	}
++	else {
++		return TEE_SUCCESS;
++	}
++}
++
++/*
++ * Release the RMPB mutex.
++ */
++static void tee_rpmb_release(void) {
++	mutex_unlock(&rpmb_mutex);
++}
++
+ #ifdef CFG_RPMB_TESTKEY
+ 
+ static const uint8_t rpmb_test_key[RPMB_KEY_MAC_SIZE] = {
+@@ -1956,7 +2022,10 @@ static TEE_Result rpmb_fs_read(struct tee_file_handle *tfh, size_t pos,
+ 	if (!size)
+ 		return TEE_SUCCESS;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(fh->uuid);
++	if(res != TEE_SUCCESS) {
++		return res;
++	}
+ 
+ 	dump_fh(fh);
+ 
+@@ -1980,7 +2049,7 @@ static TEE_Result rpmb_fs_read(struct tee_file_handle *tfh, size_t pos,
+ 	*len = size;
+ 
+ out:
+-	mutex_unlock(&rpmb_mutex);
++	tee_rpmb_release();
+ 	return res;
+ }
+ 
+@@ -2095,12 +2164,17 @@ static TEE_Result rpmb_fs_write(struct tee_file_handle *tfh, size_t pos,
+ 				const void *buf, size_t size)
+ {
+ 	TEE_Result res;
++	struct rpmb_file_handle *fh = (struct rpmb_file_handle *)tfh;
++
++	res = tee_rpmb_acquire(fh->uuid);
++	if(res != TEE_SUCCESS) {
++		return res;
++	}
+ 
+-	mutex_lock(&rpmb_mutex);
+ 	res = rpmb_fs_write_primitive((struct rpmb_file_handle *)tfh, pos,
+ 				      buf, size);
+-	mutex_unlock(&rpmb_mutex);
+ 
++	tee_rpmb_release();
+ 	return res;
+ }
+ 
+@@ -2125,12 +2199,15 @@ static TEE_Result rpmb_fs_remove(struct tee_pobj *po)
+ 	if (!fh)
+ 		return TEE_ERROR_OUT_OF_MEMORY;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(&po->uuid);
++	if(res != TEE_SUCCESS) {
++		free(fh);
++		return res;
++	}
+ 
+ 	res = rpmb_fs_remove_internal(fh);
+ 
+-	mutex_unlock(&rpmb_mutex);
+-
++	tee_rpmb_release();
+ 	free(fh);
+ 	return res;
+ }
+@@ -2202,10 +2279,14 @@ static  TEE_Result rpmb_fs_rename(struct tee_pobj *old, struct tee_pobj *new,
+ {
+ 	TEE_Result res;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(&old->uuid);
++	if(res != TEE_SUCCESS) {
++		return res;
++	}
++
+ 	res = rpmb_fs_rename_internal(old, new, overwrite);
+-	mutex_unlock(&rpmb_mutex);
+ 
++	tee_rpmb_release();
+ 	return res;
+ }
+ 
+@@ -2220,7 +2301,10 @@ static TEE_Result rpmb_fs_truncate(struct tee_file_handle *tfh, size_t length)
+ 	uintptr_t newaddr;
+ 	TEE_Result res = TEE_ERROR_GENERIC;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(fh->uuid);
++	if(res != TEE_SUCCESS) {
++		return res;
++	}
+ 
+ 	if (length > INT32_MAX) {
+ 		res = TEE_ERROR_BAD_PARAMETERS;
+@@ -2281,7 +2365,7 @@ static TEE_Result rpmb_fs_truncate(struct tee_file_handle *tfh, size_t length)
+ 	res = write_fat_entry(fh, true);
+ 
+ out:
+-	mutex_unlock(&rpmb_mutex);
++	tee_rpmb_release();
+ 	if (pool_result)
+ 		tee_mm_final(&p);
+ 	if (newbuf)
+@@ -2322,7 +2406,10 @@ static TEE_Result rpmb_fs_dir_populate(const char *path,
+ 	uint32_t size;
+ 	char temp;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(NULL);
++	if(res != TEE_SUCCESS) {
++		return res;
++	}
+ 
+ 	res = rpmb_fs_setup();
+ 	if (res != TEE_SUCCESS)
+@@ -2400,7 +2487,7 @@ static TEE_Result rpmb_fs_dir_populate(const char *path,
+ 		res = TEE_ERROR_ITEM_NOT_FOUND; /* No directories were found. */
+ 
+ out:
+-	mutex_unlock(&rpmb_mutex);
++	tee_rpmb_release();
+ 	if (res != TEE_SUCCESS)
+ 		rpmb_fs_dir_free(dir);
+ 	if (fat_entries)
+@@ -2488,14 +2575,17 @@ static TEE_Result rpmb_fs_open(struct tee_pobj *po, size_t *size,
+ 	if (!fh)
+ 		return TEE_ERROR_OUT_OF_MEMORY;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(&po->uuid);
++	if(res != TEE_SUCCESS) {
++		free(fh);
++		return res;
++	}
+ 
+ 	res = rpmb_fs_open_internal(fh, &po->uuid, false);
+ 	if (!res && size)
+ 		*size = fh->fat_entry.data_size;
+ 
+-	mutex_unlock(&rpmb_mutex);
+-
++	tee_rpmb_release();
+ 	if (res)
+ 		free(fh);
+ 	else
+@@ -2517,7 +2607,12 @@ static TEE_Result rpmb_fs_create(struct tee_pobj *po, bool overwrite,
+ 	if (!fh)
+ 		return TEE_ERROR_OUT_OF_MEMORY;
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(&po->uuid);
++	if(res != TEE_SUCCESS) {
++		free(fh);
++		return res;
++	}
++
+ 	res = rpmb_fs_open_internal(fh, &po->uuid, true);
+ 	if (res)
+ 		goto out;
+@@ -2567,8 +2662,7 @@ out:
+ 	} else {
+ 		*ret_fh = (struct tee_file_handle *)fh;
+ 	}
+-	mutex_unlock(&rpmb_mutex);
+-
++	tee_rpmb_release();
+ 	return res;
+ }
+ 
+@@ -2598,11 +2692,15 @@ TEE_Result tee_rpmb_fs_raw_open(const char *fname, bool create,
+ 
+ 	snprintf(fh->filename, sizeof(fh->filename), "/%s", fname);
+ 
+-	mutex_lock(&rpmb_mutex);
++	res = tee_rpmb_acquire(NULL);
++	if(res != TEE_SUCCESS) {
++		free(fh);
++		return res;
++	}
+ 
+ 	res = rpmb_fs_open_internal(fh, &uuid, create);
+ 
+-	mutex_unlock(&rpmb_mutex);
++	tee_rpmb_release();
+ 
+ 	if (res) {
+ 		if (create)
+@@ -2614,3 +2712,10 @@ TEE_Result tee_rpmb_fs_raw_open(const char *fname, bool create,
+ 
+ 	return res;
+ }
++
++void tee_rpmb_fs_configure(bool blocked) {
++
++	mutex_lock(&rpmb_mutex);
++	rpmb_config.blocked = blocked;
++	mutex_unlock(&rpmb_mutex);
++}
+-- 
+2.17.1
+

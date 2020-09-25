@@ -1,0 +1,34 @@
+From 982250c3f4d9021907700d447d6a28679d2ef380 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 9 Mar 2020 11:11:55 +0100
+Subject: [PATCH 13/87] MMIOT-20 Enable TZASC protection on Secure Data Path
+ only for imx8mq B1 revision
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/drivers/tzc380.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/drivers/tzc380.c b/core/arch/arm/plat-imx/drivers/tzc380.c
+index a0b4bee9..8e313c3e 100644
+--- a/core/arch/arm/plat-imx/drivers/tzc380.c
++++ b/core/arch/arm/plat-imx/drivers/tzc380.c
+@@ -67,9 +67,12 @@ void imx_configure_tzasc(void)
+ 					    region);
+ 
+ #ifdef CFG_SECURE_DATA_PATH
+-		region = tzc_auto_configure(CFG_IMX_TZC_SDP_START,
+-					    CFG_IMX_TZC_SDP_SIZE, TZC_ATTR_SP_S_RW,
+-					    region);
++		if (!soc_is_imx8mq_b0_layer())
++		{
++			region = tzc_auto_configure(CFG_IMX_TZC_SDP_START,
++						    CFG_IMX_TZC_SDP_SIZE, TZC_ATTR_SP_S_RW,
++						    region);
++		}
+ #endif
+ 
+ 		DMSG("Action register: 0x%" PRIx32, tzc_get_action());
+-- 
+2.17.1
+

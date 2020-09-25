@@ -1,0 +1,134 @@
+From cb765fbec6f2ad113a2e1688eecc03174d9100d4 Mon Sep 17 00:00:00 2001
+From: Jerome Forissier <jerome@forissier.org>
+Date: Wed, 15 Apr 2020 15:51:40 +0200
+Subject: [PATCH 42/87] core: crypto: use supplied DSA parameters when creating
+ key
+
+When generating a DSA key, syscall_obj_generate_key() currently ignores
+the supplied parameters: TEE_ATTR_DSA_PRIME, TEE_ATTR_DSA_SUBPRIME and
+TEE_ATTR_DSA_BASE. Instead a new set of parameters is generated each
+time based on the specified key size. This does not comply with the
+GlobalPlatform TEE Internal Core API specification which lists these
+atrributes as mandatory input to the generation function (see v1.2.1
+table 5-12 TEE_GenerateKey parameters).
+
+Fix this issue by providing the supplied parameters to LibTomCrypt's
+dsa_generate_key() instead of calling dsa_make_key().
+
+Fixes: https://github.com/OP-TEE/optee_os/issues/3746
+Signed-off-by: Jerome Forissier <jerome@forissier.org>
+Acked-by: Jens Wiklander <jens.wiklander@linaro.org>
+Reviewed-by: Etienne Carriere <etienne.carriere@linaro.org>
+---
+ core/lib/libtomcrypt/dsa.c | 59 +++++++++++++++++---------------------
+ core/tee/tee_svc_cryp.c    | 11 +++++--
+ 2 files changed, 36 insertions(+), 34 deletions(-)
+
+diff --git a/core/lib/libtomcrypt/dsa.c b/core/lib/libtomcrypt/dsa.c
+index 9db95a69..0ccfeca1 100644
+--- a/core/lib/libtomcrypt/dsa.c
++++ b/core/lib/libtomcrypt/dsa.c
+@@ -61,41 +61,36 @@ err:
+ 
+ TEE_Result crypto_acipher_gen_dsa_key(struct dsa_keypair *key, size_t key_size)
+ {
+-	TEE_Result res;
+-	dsa_key ltc_tmp_key;
+-	size_t group_size, modulus_size = key_size/8;
+-	int ltc_res;
++	dsa_key ltc_tmp_key = { };
++	int ltc_res = 0;
+ 
+-	if (modulus_size <= 128)
+-		group_size = 20;
+-	else if (modulus_size <= 256)
+-		group_size = 30;
+-	else if (modulus_size <= 384)
+-		group_size = 35;
+-	else
+-		group_size = 40;
++	if (key_size != 8 * mp_unsigned_bin_size(key->p))
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	ltc_res = mp_init_multi(&ltc_tmp_key.g, &ltc_tmp_key.p, &ltc_tmp_key.q,
++				&ltc_tmp_key.x, &ltc_tmp_key.y, NULL);
++	if (ltc_res)
++		return TEE_ERROR_OUT_OF_MEMORY;
++
++	/* Copy the key parameters */
++	mp_copy(key->g, ltc_tmp_key.g);
++	mp_copy(key->p, ltc_tmp_key.p);
++	mp_copy(key->q, ltc_tmp_key.q);
+ 
+ 	/* Generate the DSA key */
+-	ltc_res = dsa_make_key(NULL, find_prng("prng_crypto"), group_size,
+-			       modulus_size, &ltc_tmp_key);
+-	if (ltc_res != CRYPT_OK) {
+-		res = TEE_ERROR_BAD_PARAMETERS;
+-	} else if ((size_t)mp_count_bits(ltc_tmp_key.p) != key_size) {
+-		dsa_free(&ltc_tmp_key);
+-		res = TEE_ERROR_BAD_PARAMETERS;
+-	} else {
+-		/* Copy the key */
+-		ltc_mp.copy(ltc_tmp_key.g, key->g);
+-		ltc_mp.copy(ltc_tmp_key.p, key->p);
+-		ltc_mp.copy(ltc_tmp_key.q, key->q);
+-		ltc_mp.copy(ltc_tmp_key.y, key->y);
+-		ltc_mp.copy(ltc_tmp_key.x, key->x);
+-
+-		/* Free the tempory key */
+-		dsa_free(&ltc_tmp_key);
+-		res = TEE_SUCCESS;
+-	}
+-	return res;
++	ltc_res = dsa_generate_key(NULL, find_prng("prng_crypto"),
++				   &ltc_tmp_key);
++	if (ltc_res)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Copy the key */
++	mp_copy(ltc_tmp_key.y, key->y);
++	mp_copy(ltc_tmp_key.x, key->x);
++
++	/* Free the temporary key */
++	dsa_free(&ltc_tmp_key);
++
++	return TEE_SUCCESS;
+ }
+ 
+ TEE_Result crypto_acipher_dsa_sign(uint32_t algo, struct dsa_keypair *key,
+diff --git a/core/tee/tee_svc_cryp.c b/core/tee/tee_svc_cryp.c
+index 731a6191..d04888bd 100644
+--- a/core/tee/tee_svc_cryp.c
++++ b/core/tee/tee_svc_cryp.c
+@@ -1674,10 +1674,16 @@ static TEE_Result tee_svc_obj_generate_key_rsa(
+ 
+ static TEE_Result tee_svc_obj_generate_key_dsa(
+ 	struct tee_obj *o, const struct tee_cryp_obj_type_props *type_props,
+-	uint32_t key_size)
++	uint32_t key_size, const TEE_Attribute *params, uint32_t param_count)
+ {
+ 	TEE_Result res;
+ 
++	/* Copy the present attributes into the obj before starting */
++	res = tee_svc_cryp_obj_populate_type(o, type_props, params,
++					     param_count);
++	if (res != TEE_SUCCESS)
++		return res;
++
+ 	res = crypto_acipher_gen_dsa_key(o->attr, key_size);
+ 	if (res != TEE_SUCCESS)
+ 		return res;
+@@ -1856,7 +1862,8 @@ TEE_Result syscall_obj_generate_key(unsigned long obj, unsigned long key_size,
+ 		break;
+ 
+ 	case TEE_TYPE_DSA_KEYPAIR:
+-		res = tee_svc_obj_generate_key_dsa(o, type_props, key_size);
++		res = tee_svc_obj_generate_key_dsa(o, type_props, key_size,
++						   params, param_count);
+ 		if (res != TEE_SUCCESS)
+ 			goto out;
+ 		break;
+-- 
+2.17.1
+

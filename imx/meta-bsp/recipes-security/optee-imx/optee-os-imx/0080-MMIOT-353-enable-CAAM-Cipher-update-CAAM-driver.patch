@@ -1,0 +1,110 @@
+From e407b5c29cffb5d83e0772232ed3263a17e1fff4 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 23 Jun 2020 11:14:00 +0200
+Subject: [PATCH 80/87] MMIOT-353: enable CAAM Cipher + update CAAM driver
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk        |  8 ++++----
+ core/drivers/crypto/crypto_api/acipher/dh.c  |  6 +++---
+ core/drivers/crypto/crypto_api/acipher/ecc.c | 15 +++++++++------
+ 3 files changed, 16 insertions(+), 13 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 7a788745..ecebcc4a 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -114,18 +114,18 @@ cryphw-one-enabled = $(call cfg-one-enabled, \
+ 
+ 
+ # Definition of the HW and Cryto Driver Algorithm supported by all i.MX
+-$(eval $(call cryphw-enable-drv-hw, HASH))
++$(eval $(call cryphw-enable-drv-hw, CIPHER))
+ $(eval $(call cryphw-enable-drv-hw, SM))
+ $(eval $(call cryphw-enable-drv-hw, BLOB))
+-$(eval $(call cryphw-enable-drv-hw, HMAC))
+ 
+ ifneq ($(filter y, $(CFG_MX8MQ) $(CFG_MX8MM)), y)
+-$(eval $(call cryphw-enable-drv-hw, CIPHER))
++$(eval $(call cryphw-enable-drv-hw, HASH))
++$(eval $(call cryphw-enable-drv-hw, HMAC))
+ $(eval $(call cryphw-enable-drv-hw, CMAC))
+ endif
+ 
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+-	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP)), y)
++	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP) $(CFG_MX8QM) $(CFG_MX8QX)), y)
+ $(eval $(call cryphw-enable-drv-hw, MP))
+ CFG_PTA_MP ?= y
+ endif
+diff --git a/core/drivers/crypto/crypto_api/acipher/dh.c b/core/drivers/crypto/crypto_api/acipher/dh.c
+index 81ffd951..1bd53749 100644
+--- a/core/drivers/crypto/crypto_api/acipher/dh.c
++++ b/core/drivers/crypto/crypto_api/acipher/dh.c
+@@ -32,7 +32,7 @@ TEE_Result crypto_acipher_alloc_dh_keypair(struct dh_keypair *key,
+ }
+ 
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
+-				     size_t key_size)
++				     size_t xbits, size_t key_size)
+ {
+ 	TEE_Result ret = TEE_ERROR_NOT_IMPLEMENTED;
+ 	struct drvcrypt_dh *dh = NULL;
+@@ -44,10 +44,10 @@ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
+ 
+ 	dh = drvcrypt_get_ops(CRYPTO_DH);
+ 	if (dh)
+-		ret = dh->gen_keypair(key, q, key_size);
++		ret = dh->gen_keypair(key, q, xbits);
+ 
+ 	CRYPTO_TRACE("DH Keypair (%zu bits) generate ret = 0x%" PRIx32,
+-		     key_size, ret);
++		     xbits, ret);
+ 
+ 	return ret;
+ }
+diff --git a/core/drivers/crypto/crypto_api/acipher/ecc.c b/core/drivers/crypto/crypto_api/acipher/ecc.c
+index 9b59c829..8730d545 100644
+--- a/core/drivers/crypto/crypto_api/acipher/ecc.c
++++ b/core/drivers/crypto/crypto_api/acipher/ecc.c
+@@ -158,11 +158,11 @@ void crypto_acipher_free_ecc_public_key(struct ecc_public_key *key)
+  *
+  * @key   Keypair
+  */
+-TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
++TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key, size_t key_size)
+ {
+ 	TEE_Result ret = TEE_ERROR_NOT_IMPLEMENTED;
+ 	struct drvcrypt_ecc *ecc = NULL;
+-	size_t size_bits = 0;
++	size_t key_size_bits = 0;
+ 
+ 	/* Check input parameters */
+ 	if (!key) {
+@@ -170,16 +170,19 @@ TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
+ 		return TEE_ERROR_BAD_PARAMETERS;
+ 	}
+ 
+-	size_bits = get_ecc_keysize(key->curve);
+-	if (!size_bits)
++	key_size_bits = get_ecc_keysize(key->curve);
++	if (!key_size_bits)
+ 		return TEE_ERROR_NOT_IMPLEMENTED;
+ 
++        if (key_size != key_size_bits)
++               	return TEE_ERROR_BAD_PARAMETERS;
++
+ 	ecc = drvcrypt_get_ops(CRYPTO_ECC);
+ 	if (ecc)
+-		ret = ecc->gen_keypair(key, size_bits);
++		ret = ecc->gen_keypair(key, key_size_bits);
+ 
+ 	CRYPTO_TRACE("ECC Keypair (%zu bits) generate ret = 0x%" PRIx32,
+-		     size_bits, ret);
++		     key_size_bits, ret);
+ 
+ 	return ret;
+ }
+-- 
+2.17.1
+

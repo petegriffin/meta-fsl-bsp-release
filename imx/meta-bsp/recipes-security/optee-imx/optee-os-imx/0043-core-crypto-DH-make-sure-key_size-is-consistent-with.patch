@@ -1,0 +1,121 @@
+From 013ffc5392dc34afbdab324bb68a5a02f9f09d7b Mon Sep 17 00:00:00 2001
+From: Jerome Forissier <jerome@forissier.org>
+Date: Thu, 16 Apr 2020 14:14:15 +0200
+Subject: [PATCH 43/87] core: crypto: DH: make sure key_size is consistent with
+ attributes
+
+TEE_GenerateKey() takes a key_size argument and various attributes. For
+Diffie-Hellman, if the size of the prime number (TEE_ATTR_DH_PRIME) is
+not key_size, we should return TEE_ERROR_BAD_PARAMETERS as per the GP
+TEE Internal Core API specification v1.2.1: "If an incorrect or
+inconsistent attribute is detected. The checks that are performed
+depend on the implementation.".
+
+Signed-off-by: Jerome Forissier <jerome@forissier.org>
+Acked-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ core/crypto/crypto.c         | 3 ++-
+ core/include/crypto/crypto.h | 2 +-
+ core/lib/libtomcrypt/dh.c    | 5 ++++-
+ core/tee/tee_svc_cryp.c      | 5 ++---
+ lib/libmbedtls/core/dh.c     | 6 +++++-
+ 5 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/core/crypto/crypto.c b/core/crypto/crypto.c
+index 7b1cc6c3..eb795f26 100644
+--- a/core/crypto/crypto.c
++++ b/core/crypto/crypto.c
+@@ -636,7 +636,8 @@ TEE_Result crypto_acipher_alloc_dh_keypair(struct dh_keypair *s __unused,
+ 
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key __unused,
+ 				     struct bignum *q __unused,
+-				     size_t xbits __unused)
++				     size_t xbits __unused,
++				     size_t key_size __unused)
+ {
+ 	return TEE_ERROR_NOT_IMPLEMENTED;
+ }
+diff --git a/core/include/crypto/crypto.h b/core/include/crypto/crypto.h
+index b98b2626..6cd1ae29 100644
+--- a/core/include/crypto/crypto.h
++++ b/core/include/crypto/crypto.h
+@@ -202,7 +202,7 @@ void crypto_acipher_free_ecc_keypair(struct ecc_keypair *s);
+ TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key, size_t key_size);
+ TEE_Result crypto_acipher_gen_dsa_key(struct dsa_keypair *key, size_t key_size);
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
+-				     size_t xbits);
++				     size_t xbits, size_t key_size);
+ TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key);
+ 
+ TEE_Result crypto_acipher_dh_shared_secret(struct dh_keypair *private_key,
+diff --git a/core/lib/libtomcrypt/dh.c b/core/lib/libtomcrypt/dh.c
+index 048acc96..d29d6632 100644
+--- a/core/lib/libtomcrypt/dh.c
++++ b/core/lib/libtomcrypt/dh.c
+@@ -37,12 +37,15 @@ err:
+ }
+ 
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
+-				     size_t xbits)
++				     size_t xbits, size_t key_size)
+ {
+ 	TEE_Result res = TEE_ERROR_GENERIC;
+ 	dh_key ltc_tmp_key = { };
+ 	int ltc_res = 0;
+ 
++	if (key_size != 8 * mp_unsigned_bin_size(key->p))
++		return TEE_ERROR_BAD_PARAMETERS;
++
+ 	ltc_res = mp_init_multi(&ltc_tmp_key.base, &ltc_tmp_key.prime, NULL);
+ 	if (ltc_res != CRYPT_OK)
+ 		return TEE_ERROR_OUT_OF_MEMORY;
+diff --git a/core/tee/tee_svc_cryp.c b/core/tee/tee_svc_cryp.c
+index d04888bd..4b4b8f88 100644
+--- a/core/tee/tee_svc_cryp.c
++++ b/core/tee/tee_svc_cryp.c
+@@ -1696,8 +1696,7 @@ static TEE_Result tee_svc_obj_generate_key_dsa(
+ 
+ static TEE_Result tee_svc_obj_generate_key_dh(
+ 	struct tee_obj *o, const struct tee_cryp_obj_type_props *type_props,
+-	uint32_t key_size __unused,
+-	const TEE_Attribute *params, uint32_t param_count)
++	uint32_t key_size, const TEE_Attribute *params, uint32_t param_count)
+ {
+ 	TEE_Result res;
+ 	struct dh_keypair *tee_dh_key;
+@@ -1716,7 +1715,7 @@ static TEE_Result tee_svc_obj_generate_key_dh(
+ 		dh_q = tee_dh_key->q;
+ 	if (get_attribute(o, type_props, TEE_ATTR_DH_X_BITS))
+ 		dh_xbits = tee_dh_key->xbits;
+-	res = crypto_acipher_gen_dh_key(tee_dh_key, dh_q, dh_xbits);
++	res = crypto_acipher_gen_dh_key(tee_dh_key, dh_q, dh_xbits, key_size);
+ 	if (res != TEE_SUCCESS)
+ 		return res;
+ 
+diff --git a/lib/libmbedtls/core/dh.c b/lib/libmbedtls/core/dh.c
+index dfc6dd8d..270f7d0e 100644
+--- a/lib/libmbedtls/core/dh.c
++++ b/lib/libmbedtls/core/dh.c
+@@ -44,7 +44,7 @@ err:
+ 
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key,
+ 				     struct bignum *q __unused,
+-				     size_t xbits)
++				     size_t xbits, size_t key_size)
+ {
+ 	TEE_Result res = TEE_SUCCESS;
+ 	int lmd_res = 0;
+@@ -58,6 +58,10 @@ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key,
+ 	dhm.P = *(mbedtls_mpi *)key->p;
+ 
+ 	dhm.len = crypto_bignum_num_bytes(key->p);
++	if (key_size != 8 * dhm.len) {
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
+ 
+ 	if (xbits == 0)
+ 		xbits = dhm.len;
+-- 
+2.17.1
+

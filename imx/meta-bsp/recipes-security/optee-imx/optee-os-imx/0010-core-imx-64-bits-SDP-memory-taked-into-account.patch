@@ -1,0 +1,79 @@
+From a8dd4816b451680b5a7aaa8ac9c3a88f492201ab Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 4 Mar 2020 12:28:27 +0100
+Subject: [PATCH 10/87] core: imx 64 bits: SDP memory taked into account
+
+Add a new region for SDP memory in TZC380 driver
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk          |  5 ++++-
+ core/arch/arm/plat-imx/drivers/tzc380.c |  6 ++++++
+ core/arch/arm/plat-imx/sdp_conf.mk      | 18 ++++++++++++++++++
+ 3 files changed, 28 insertions(+), 1 deletion(-)
+ create mode 100644 core/arch/arm/plat-imx/sdp_conf.mk
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 6d4742d5..c0d0d477 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -440,7 +440,7 @@ CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) + 0x16000000)
+ else
+ # for backward compatibility all the other will keep existing location at the end of DDR.
+ # put optee end of ddr for AARCH64
+-CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) - 0x02000000 + $(CFG_DDR_SIZE))
++CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) - 0x2000000 + $(CFG_DDR_SIZE))
+ endif
+ else
+ # put optee at DDR base address + 64MB for AARCH32
+@@ -501,3 +501,6 @@ endif
+ 
+ # Cryptographic configuration
+ include core/arch/arm/plat-imx/crypto_conf.mk
++
++# Secure Data Path configuration
++include core/arch/arm/plat-imx/sdp_conf.mk
+diff --git a/core/arch/arm/plat-imx/drivers/tzc380.c b/core/arch/arm/plat-imx/drivers/tzc380.c
+index 5166ecf5..a0b4bee9 100644
+--- a/core/arch/arm/plat-imx/drivers/tzc380.c
++++ b/core/arch/arm/plat-imx/drivers/tzc380.c
+@@ -66,6 +66,12 @@ void imx_configure_tzasc(void)
+ 					    CFG_SHMEM_SIZE, TZC_ATTR_SP_ALL,
+ 					    region);
+ 
++#ifdef CFG_SECURE_DATA_PATH
++		region = tzc_auto_configure(CFG_IMX_TZC_SDP_START,
++					    CFG_IMX_TZC_SDP_SIZE, TZC_ATTR_SP_S_RW,
++					    region);
++#endif
++
+ 		DMSG("Action register: 0x%" PRIx32, tzc_get_action());
+ 	}
+ 
+diff --git a/core/arch/arm/plat-imx/sdp_conf.mk b/core/arch/arm/plat-imx/sdp_conf.mk
+new file mode 100644
+index 00000000..25b2b6b6
+--- /dev/null
++++ b/core/arch/arm/plat-imx/sdp_conf.mk
+@@ -0,0 +1,18 @@
++ifeq ($(CFG_SECURE_DATA_PATH), y)
++
++ifneq (,$(filter y, $(CFG_MX8MM) $(CFG_MX8MN) $(CFG_MX8MP) $(CFG_MX8MQ)))
++CFG_IMX_TZC_SDP_START ?= ($(CFG_TEE_SDP_MEM_BASE) - $(CFG_DRAM_BASE))
++else
++CFG_IMX_TZC_SDP_START ?= $(CFG_TEE_SDP_MEM_BASE)
++endif
++
++# SDP layout configuration :
++#  *  +----------------------------------+ <-- CFG_TEE_SDP_MEM_BASE
++#  *  | SDP RAM                          |
++#  *  +----------------------------------+ <-- CFG_TZDRAM_START = CFG_TEE_SDP_MEM_BASE + CFG_TEE_SDP_MEM_SIZE
++#  *  | TEE core secure RAM (TEE_RAM)    |
++#  *  +----------------------------------+
++#  *  | Trusted Application RAM (TA_RAM) |
++#  *  +----------------------------------+
++CFG_IMX_TZC_SDP_SIZE ?= ($(CFG_TZDRAM_START) - $(CFG_TEE_SDP_MEM_BASE))
++endif
+-- 
+2.17.1
+

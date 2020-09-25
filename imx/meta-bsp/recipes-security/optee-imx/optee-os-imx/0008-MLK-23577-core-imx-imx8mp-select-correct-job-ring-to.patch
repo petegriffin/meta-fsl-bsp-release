@@ -1,0 +1,39 @@
+From 2648cd1bb465b44fbb6756ac01e37d0245a16146 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Fri, 13 Mar 2020 18:39:07 +0100
+Subject: [PATCH 08/87] MLK-23577 core: imx: imx8mp select correct job ring to
+ allow HAB
+
+When HAB is used Job rin 0 is being used.
+Select another JR for OP-TEE not to interfere with HAB.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+(cherry picked from commit b32a9b6b9fa474359464ca70e62b796a45e16e36)
+---
+ core/arch/arm/plat-imx/crypto_conf.mk | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 75e3c5cd..b03fa653 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -34,8 +34,16 @@ CFG_DBG_CAAM_BUF ?= 0x0
+ #
+ $(call force, CFG_JR_BLOCK_SIZE,0x1000)
+ 
++ifneq (,$(filter y, $(CFG_MX8MM) $(CFG_MX8MN) $(CFG_MX8MP) $(CFG_MX8MQ)))
++# On i.MX8 mscale devices OP-TEE runs before u-boot.
++# HAB can still be reuse in u-boot to authenticate linux
++# Use another Job ring other than the one used by HAB.
++$(call force, CFG_JR_INDEX,2)  # Default JR index used
++$(call force, CFG_JR_INT,146)  # Default JR IT Number (114 + 32) = 146
++else
+ $(call force, CFG_JR_INDEX,0)  # Default JR index used
+ $(call force, CFG_JR_INT,137)  # Default JR IT Number (105 + 32) = 137
++endif
+ 
+ #
+ # Enable HUK CAAM Generation
+-- 
+2.17.1
+

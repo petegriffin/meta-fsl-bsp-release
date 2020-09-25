@@ -1,0 +1,26 @@
+From bce2dc414a4b913f1cf5ab502510aeb84e0fa49a Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 23 Sep 2019 15:53:37 +0200
+Subject: [PATCH 33/87] MMIOT-271 + MMIOT-272 Add AVB TA in the Early TA
+
+Update imx8mq early TA set with AVB.
+---
+ core/arch/arm/plat-imx/conf.mk | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 7d6ff004..00a6ef1c 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -323,6 +323,8 @@ endif
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mqevk))
+ CFG_DDR_SIZE ?= 0xc0000000
+ CFG_UART_BASE ?= UART1_BASE
++
++CFG_IN_TREE_EARLY_TAS += avb/023f8f1a-292a-432b-8fc4-de8471358067
+ endif
+ 
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mmevk))
+-- 
+2.17.1
+

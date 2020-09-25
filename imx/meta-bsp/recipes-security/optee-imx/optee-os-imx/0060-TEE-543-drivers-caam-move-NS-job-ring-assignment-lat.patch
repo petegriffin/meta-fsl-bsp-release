@@ -1,0 +1,71 @@
+From 3a8200c8cd8bc62690649c5fc00d9f0e220848e5 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Thu, 9 Apr 2020 11:55:54 +0200
+Subject: [PATCH 60/87] TEE-543 drivers: caam: move NS job ring assignment
+ later in the boot
+
+When optee-os is compiled with CFG_CRYPTO_DRIVER=n, all the job rings
+are assign to NS world. However optee does need a Job ring to instanciate
+HUK.
+This commit moves job ring assignements later in the boot process.
+
+Fixes: 1bbc5e2da03d ("drivers: implement HUK CAAM driver")
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/drivers/crypto/caam/caam_ctrl.c | 21 +++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/caam_ctrl.c b/core/drivers/crypto/caam/caam_ctrl.c
+index dc893343..217d417d 100644
+--- a/core/drivers/crypto/caam/caam_ctrl.c
++++ b/core/drivers/crypto/caam/caam_ctrl.c
+@@ -22,12 +22,13 @@
+ #include <kernel/panic.h>
+ #include <tee_api_types.h>
+ 
++static struct caam_jrcfg jrcfg;
++
+ /* Crypto driver initialization */
+ TEE_Result crypto_driver_init(void)
+ {
+ 	TEE_Result retresult = TEE_ERROR_GENERIC;
+ 	enum caam_status retstatus = CAAM_FAILURE;
+-	struct caam_jrcfg jrcfg = {};
+ 
+ 	/* Enable the CAAM Clock */
+ 	caam_hal_clk_enable(true);
+@@ -142,15 +143,6 @@ TEE_Result crypto_driver_init(void)
+ 	/* Everything is OK, register the Power Management handler */
+ 	caam_pwr_init();
+ 
+-	/*
+-	 * Configure Job Rings to NS World
+-	 * If the Driver Crypto is not used CFG_NXP_CAAM_RUNTIME_JR is not
+-	 * enable, hence relax the JR used for the CAAM configuration to
+-	 * the Non-Secure
+-	 */
+-	if (jrcfg.base)
+-		caam_hal_cfg_setup_nsjobring(&jrcfg);
+-
+ 	retresult = TEE_SUCCESS;
+ exit_init:
+ 	if (retresult != TEE_SUCCESS) {
+@@ -173,6 +165,15 @@ static TEE_Result init_caam_late(void)
+ 		panic();
+ 	}
+ 
++	/*
++	 * Configure Job Rings to NS World
++	 * If the Driver Crypto is not used CFG_NXP_CAAM_RUNTIME_JR is not
++	 * enable, hence relax the JR used for the CAAM configuration to
++	 * the Non-Secure
++	 */
++	if (jrcfg.base)
++		caam_hal_cfg_setup_nsjobring(&jrcfg);
++
+ 	return TEE_SUCCESS;
+ }
+ 
+-- 
+2.17.1
+

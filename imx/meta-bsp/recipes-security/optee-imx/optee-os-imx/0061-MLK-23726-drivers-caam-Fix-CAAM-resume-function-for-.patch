@@ -1,0 +1,51 @@
+From 93c0bb3732950df1a5452cbbddbb8c43c68ad860 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Wed, 8 Apr 2020 22:39:35 +0200
+Subject: [PATCH 61/87] MLK-23726 drivers: caam: Fix CAAM resume function for
+ i.MX 6SX
+
+i.MX6SX low power mode removes CAAM power. The order in which the
+registers are restored is important for JR configuration.
+The MID registers need to be configured first in order for the other
+ones to be configured correctly. This commit makes a call to the backup
+function to save the MID settings for the JR used by OP-TEE first.
+
+Fixes: 65d11b9078be ("TEE-511 drivers: caam: Fix suspend/resume")
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/drivers/crypto/caam/hal/common/hal_cfg.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/hal/common/hal_cfg.c b/core/drivers/crypto/caam/hal/common/hal_cfg.c
+index 51752bb8..3eff11d6 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_cfg.c
++++ b/core/drivers/crypto/caam/hal/common/hal_cfg.c
+@@ -72,7 +72,9 @@ enum caam_status caam_hal_cfg_get_conf(struct caam_jrcfg *jrcfg)
+ 	jrcfg->nb_jobs = NB_JOBS_QUEUE;
+ 
+ 	retstatus = CAAM_NO_ERROR;
+-
++#ifdef CFG_NXP_CAAM_RUNTIME_JR
++	caam_hal_jr_prepare_backup(jrcfg->base, jrcfg->offset);
++#endif
+ exit_get_conf:
+ 	HAL_TRACE("HAL CFG Get CAAM config ret (0x%x)\n", retstatus);
+ 	return retstatus;
+@@ -91,13 +93,9 @@ void caam_hal_cfg_common_setup_nsjobring(struct caam_jrcfg *jrcfg)
+ 		/*
+ 		 * When the Cryptographic driver is enabled, keep the
+ 		 * Secure Job Ring don't release it.
+-		 * But save the configuration to restore it when
+-		 * device reset after suspend.
+ 		 */
+-		if (jr_offset == jrcfg->offset) {
+-			caam_hal_jr_prepare_backup(jrcfg->base, jr_offset);
++		if (jr_offset == jrcfg->offset)
+ 			continue;
+-		}
+ #endif
+ 		status = caam_hal_jr_setowner(jrcfg->base, jr_offset,
+ 					      JROWN_ARM_NS);
+-- 
+2.17.1
+

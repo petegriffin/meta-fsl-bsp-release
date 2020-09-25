@@ -1,0 +1,108 @@
+From b001744fe225c4cbd7998fdc555a8f8cdf6c0e3c Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 2 Sep 2020 12:21:27 +0200
+Subject: [PATCH 87/87] MMIOT-564: imx8mq: MMC Hack: Reverse CID
+
+The CID get from Uboot and Linux is a made of 4 uint32 (i.e. uboot mmc
+struct in include/mmc.h).
+The rpmb_get_dev_info OPTEE Driver function is doing a memcpy into a 16
+bytes array in rpmb_dev_info structure  (drivers/tee/optee/rpmb.c)
+
+On Little endian platform, it reverse endianess of each 32bits words.
+As an example, the following CID value
+45010044 47343031 3601edb7 dd089500
+become
+44000145 31303447 b7ed0136 009508dd
+
+As this issue is only found in OPTEE Uboot driver, when authentication
+key is written at this stage, Secure RPMB storage is not accessible
+from TA called from the REE.
+
+To be able to use RPMB storage with device that get wrong authentication
+key, this hack will reverse the CID to generate the same wrong key.
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/tee/tee_rpmb_fs.c | 53 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/core/tee/tee_rpmb_fs.c b/core/tee/tee_rpmb_fs.c
+index 8675b9cf..f4d768cf 100644
+--- a/core/tee/tee_rpmb_fs.c
++++ b/core/tee/tee_rpmb_fs.c
+@@ -354,11 +354,47 @@ static TEE_Result tee_rpmb_key_gen(uint16_t dev_id __unused,
+ 	 * CID [00]: not used
+ 	 */
+ 	memcpy(message, rpmb_ctx->cid, RPMB_EMMC_CID_SIZE);
++
++	memset(message + RPMB_CID_PRV_OFFSET, 0, 1);
++	memset(message + RPMB_CID_CRC_OFFSET, 0, 1);
++	return huk_subkey_derive(HUK_SUBKEY_RPMB, message, sizeof(message),
++				 key, len);
++}
++
++#ifdef CFG_MX8MQ
++static TEE_Result tee_rpmb_key_gen_reverse_cid(uint16_t dev_id __unused,
++				   uint8_t *key, uint32_t len)
++{
++	uint8_t message[RPMB_EMMC_CID_SIZE];
++	uint32_t n;
++
++	if (!key || RPMB_KEY_MAC_SIZE != len)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	IMSG("RPMB: Using generated key with reverse cid");
++
++	/*
++	 * PRV/CRC would be changed when doing eMMC FFU
++	 * The following fields should be masked off when deriving RPMB key
++	 *
++	 * CID [55: 48]: PRV (Product revision)
++	 * CID [07: 01]: CRC (CRC7 checksum)
++	 * CID [00]: not used
++	 */
++	for (n=0;n<RPMB_EMMC_CID_SIZE;n+=4)
++	{
++		message[n] = rpmb_ctx->cid[n+3];
++		message[n+1] = rpmb_ctx->cid[n+2];
++		message[n+2] = rpmb_ctx->cid[n+1];
++		message[n+3] = rpmb_ctx->cid[n];
++	}
++
+ 	memset(message + RPMB_CID_PRV_OFFSET, 0, 1);
+ 	memset(message + RPMB_CID_CRC_OFFSET, 0, 1);
+ 	return huk_subkey_derive(HUK_SUBKEY_RPMB, message, sizeof(message),
+ 				 key, len);
+ }
++#endif
+ 
+ #endif /* !CFG_RPMB_TESTKEY */
+ 
+@@ -1190,7 +1226,24 @@ static TEE_Result tee_rpmb_init(uint16_t dev_id)
+ 			res = tee_rpmb_write_and_verify_key(dev_id);
+ 		} else if (res != TEE_SUCCESS) {
+ 			EMSG("Verify key failed!");
++#ifdef CFG_MX8MQ
++			EMSG("Try with reverse CID");
++			res = tee_rpmb_key_gen_reverse_cid(dev_id, rpmb_ctx->key,
++					       RPMB_KEY_MAC_SIZE);
++			if (res != TEE_SUCCESS) {
++				EMSG("RPMB INIT: Deriving key failed with error 0x%x",
++					res);
++				goto func_exit;
++			}
++
++			res = tee_rpmb_verify_key_sync_counter(dev_id);
++			if (res != TEE_SUCCESS) {
++				EMSG("Verify key failed!");
++				EMSG("Make sure key here matches device key");
++			}
++#else
+ 			EMSG("Make sure key here matches device key");
++#endif
+ 		}
+ 	}
+ 
+-- 
+2.17.1
+

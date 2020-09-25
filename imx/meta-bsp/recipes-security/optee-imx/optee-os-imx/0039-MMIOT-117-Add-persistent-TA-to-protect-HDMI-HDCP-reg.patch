@@ -1,0 +1,338 @@
+From b5f67de0c25e5d481b7bd1c2d17687d2237c2ea0 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Tue, 7 Apr 2020 11:24:27 +0200
+Subject: [PATCH 39/87] MMIOT-117: Add persistent TA to protect HDMI/HDCP
+ registers
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ core/arch/arm/plat-imx/pta_imx_hdcp.c | 261 ++++++++++++++++++++++++++
+ core/arch/arm/plat-imx/sub.mk         |   1 +
+ lib/libutee/include/pta_imx_hdcp.h    |  35 ++++
+ 3 files changed, 297 insertions(+)
+ create mode 100644 core/arch/arm/plat-imx/pta_imx_hdcp.c
+ create mode 100644 lib/libutee/include/pta_imx_hdcp.h
+
+diff --git a/core/arch/arm/plat-imx/pta_imx_hdcp.c b/core/arch/arm/plat-imx/pta_imx_hdcp.c
+new file mode 100644
+index 00000000..c1a900d4
+--- /dev/null
++++ b/core/arch/arm/plat-imx/pta_imx_hdcp.c
+@@ -0,0 +1,261 @@
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_imx_hdcp.c
++ *
++ * @brief   Pseudo Trusted Application.\n
++ *			Secure HDCP control (i.MX 8MQ platform)
++ */
++
++/* Standard includes */
++#include <stdlib.h>
++#include <string.h>
++
++#include <io.h>
++
++/* Library kernel includes */
++#include <kernel/interrupt.h>
++#include <kernel/misc.h>
++#include <kernel/pseudo_ta.h>
++#include <kernel/tee_time.h>
++#include <mm/core_mmu.h>
++#include <mm/core_memprot.h>
++
++#include <pta_imx_hdcp.h>
++
++/* Library tee includes */
++#include <tee_api_types.h>
++
++/* Global includes */
++#include <tee_api_defines.h>
++
++/** @brief    PTA name */
++#define HDCP_PTA_NAME "hdcp.pta"
++
++#define IS_ALIGN(x,b) (!(x & (b - 1)))
++
++static vaddr_t get_hdcp_base(uint32_t busId);
++
++static vaddr_t get_hdcp_base(uint32_t busId)
++{
++	vaddr_t vhdcp_base = (vaddr_t) NULL;
++	paddr_t phdcp_base = (paddr_t) NULL;
++	size_t phdcp_size = 0;
++
++	switch (busId)
++	{
++		case PTA_HDCP_HDP_BUSID:
++			phdcp_base = PTA_HDCP_HDP_REGISTER_BA;
++			phdcp_size = PTA_HDCP_HDP_REGISTER_SIZE;
++		break;
++
++		case PTA_HDCP_HDP_SEC_BUSID:
++			phdcp_base = PTA_HDCP_HDP_SEC_REGISTER_BA;
++			phdcp_size = PTA_HDCP_HDP_SEC_REGISTER_SIZE;
++		break;
++
++		case PTA_HDCP_RESET_BUSID:
++			phdcp_base = PTA_HDCP_RESET_REGISTER_BA;
++			phdcp_size = PTA_HDCP_RESET_REGISTER_SIZE;
++		break;
++
++		default:
++			EMSG("Unknown bus");
++			return (vaddr_t) NULL;
++	}
++
++	vhdcp_base = (vaddr_t) phys_to_virt(phdcp_base, MEM_AREA_IO_SEC);
++	if (!vhdcp_base)
++	{
++		DMSG("Map HDCP Registers for bus Id %d", busId);
++		if (!core_mmu_add_mapping(MEM_AREA_IO_SEC, phdcp_base, ROUNDUP(phdcp_size, CORE_MMU_PGDIR_SIZE)))
++                {
++			EMSG("Unable to map HDCP Registers for busId %d", busId );
++			goto out;
++		}
++		vhdcp_base = (vaddr_t) phys_to_virt(phdcp_base, MEM_AREA_IO_SEC);
++	}
++
++out:
++	return (vaddr_t) vhdcp_base;
++}
++
++static TEE_Result openSessionEntryPoint(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS], void **sess_ctx)
++{
++	uint32_t exp_param_types;
++	hdcp_session *ctx = NULL;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE);
++
++	DMSG("IMX HDCP openSessionEntryPoint");
++
++	if ((param_types != exp_param_types))
++	{
++		EMSG("BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	ctx = malloc(sizeof(hdcp_session));
++	if (!ctx)
++	{
++		return TEE_ERROR_OUT_OF_MEMORY;
++	}
++	memset(ctx,0,sizeof(hdcp_session));
++
++	ctx->busId = params[0].value.a;
++
++	DMSG("Open session for bus %d",ctx->busId);
++
++	*sess_ctx = ctx;
++
++	return TEE_SUCCESS;
++}
++
++static TEE_Result pta_hdcp_write(hdcp_session *session,uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++	uint32_t offset, value, busId;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	busId = params[0].value.a;
++	offset = params[1].value.a;
++	value = params[1].value.b;
++
++	vaddr_t hdcp_base = get_hdcp_base(busId);
++	if (!hdcp_base)
++        {
++		EMSG("Unable to get the HDCP base address");
++		res = TEE_ERROR_ITEM_NOT_FOUND;
++		goto out;
++	}
++
++	if (!IS_ALIGN(offset,sizeof(uint32_t)))
++	{
++		EMSG("Offset not aligned on 32bits (%d)",offset);
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	switch (busId)
++	{
++		case PTA_HDCP_HDP_BUSID:
++			DMSG("HDCP bus");
++			io_write32(hdcp_base + offset, value);
++		break;
++
++		case PTA_HDCP_HDP_SEC_BUSID:
++			DMSG("HDCP SECURE bus");
++			io_write32(hdcp_base + offset, value);
++		break;
++
++		case PTA_HDCP_RESET_BUSID:
++			DMSG("HDCP RESET bus");
++			io_write32(hdcp_base + offset, value);
++		break;
++
++		default:
++			EMSG("Unknown HDCP bus (%d)",session->busId);
++			return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++out:
++	return res;
++}
++
++static TEE_Result pta_hdcp_read(hdcp_session *session, uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++	uint32_t offset, busId;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_VALUE_OUTPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	busId = params[0].value.a;
++	vaddr_t hdcp_base = get_hdcp_base(busId);
++	if (!hdcp_base)
++	{
++		EMSG("Unable to get the HDCP base address for busId %d",busId);
++		res = TEE_ERROR_ITEM_NOT_FOUND;
++		goto out;
++	}
++
++	offset = params[0].value.b;
++	if (!IS_ALIGN(offset,sizeof(uint32_t)))
++	{
++		EMSG("Offset not aligned on 32bits (%d)",offset);
++		res = TEE_ERROR_BAD_PARAMETERS;
++		goto out;
++	}
++
++	params[1].value.a = io_read32(hdcp_base + offset);
++
++out:
++	return res;
++}
++
++/**
++ * @brief   Called when a pseudo TA is invoked.
++ *
++ * @param[in]  sess_ctx       Session Identifier
++ * @param[in]  cmd_id         Command ID
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params         Buffer parameters
++ *
++ * @retval TEE_ERROR_BAD_PARAMETERS   Bad parameters
++ */
++static TEE_Result invokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
++	uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
++{
++	hdcp_session *session = (hdcp_session*)sess_ctx;
++
++	switch (cmd_id)
++        {
++		case PTA_HDCP_CMD_WRITE:
++			return pta_hdcp_write(session,param_types,params);
++
++		case PTA_HDCP_CMD_READ:
++			return pta_hdcp_read(session,param_types,params);
++
++		default:
++			EMSG("Unknown command");
++			return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++static void closeSessionEntryPoint(void *sess_ctx)
++{
++	if (sess_ctx)
++	{
++		free(sess_ctx);
++	}
++}
++
++pseudo_ta_register(.uuid = HDCP_PTA_UUID,
++		   .name = HDCP_PTA_NAME,
++		   .flags = PTA_DEFAULT_FLAGS,
++		   .open_session_entry_point = openSessionEntryPoint,
++		   .close_session_entry_point = closeSessionEntryPoint,
++		   .invoke_command_entry_point = invokeCommandEntryPoint);
+diff --git a/core/arch/arm/plat-imx/sub.mk b/core/arch/arm/plat-imx/sub.mk
+index b70eccbb..de3b92c1 100644
+--- a/core/arch/arm/plat-imx/sub.mk
++++ b/core/arch/arm/plat-imx/sub.mk
+@@ -23,6 +23,7 @@ subdirs-y += pm
+ subdirs-y += drivers
+ srcs-$(CFG_IMX_OCRAM) += imx_ocram.c
+ srcs-$(CFG_DT) += imx_dt.c
++srcs-$(CFG_HDCP_PTA) += pta_imx_hdcp.c
+ 
+ # Build the busfreq module
+ subdirs-$(CFG_BUSFREQ) += busfreq
+diff --git a/lib/libutee/include/pta_imx_hdcp.h b/lib/libutee/include/pta_imx_hdcp.h
+new file mode 100644
+index 00000000..9272ce23
+--- /dev/null
++++ b/lib/libutee/include/pta_imx_hdcp.h
+@@ -0,0 +1,35 @@
++/**
++ * @copyright 2019 NXP
++ *
++ * @file    pta_hcp.h
++ *
++ * @brief   Generator of the PTA UUID (i.MX8M platform).
++ */
++#ifndef PTA_HDCP_H
++#define PTA_HDCP_H
++
++/** @brief  PTA UUID generated at https://www.gguid.com/ */
++/* aaf0c79e-5ff4-4f8c-bef4-042337f0d418 */
++#define HDCP_PTA_UUID {0xaaf0c79e,0x5ff4,0x4f8c,{0xbe,0xf4,0x04,0x23,0x37,0xf0,0xd4,0x18}}
++
++#define PTA_HDCP_BASE_ADDR          	0x32000000
++#define PTA_HDCP_HDP_REGISTER_BA       	0x32c00000
++#define PTA_HDCP_HDP_REGISTER_SIZE	0x100000
++#define PTA_HDCP_HDP_SEC_REGISTER_BA   	0x32e40000
++#define PTA_HDCP_HDP_SEC_REGISTER_SIZE  0x40000
++#define PTA_HDCP_RESET_REGISTER_BA    	0x32e2f000
++#define PTA_HDCP_RESET_REGISTER_SIZE	0x10
++
++#define PTA_HDCP_HDP_BUSID		0
++#define PTA_HDCP_HDP_SEC_BUSID		1
++#define PTA_HDCP_RESET_BUSID		2
++
++#define PTA_HDCP_CMD_WRITE 		0
++#define PTA_HDCP_CMD_READ 		1
++#define PTA_HDCP_CMD_GET_CAPABILITY	2
++
++typedef struct hdcp_session {
++	uint32_t busId;
++} hdcp_session;
++
++#endif /* PTA_HDCP_H */
+-- 
+2.17.1
+

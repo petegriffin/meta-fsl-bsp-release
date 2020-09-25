@@ -1,0 +1,1186 @@
+From 6f17a47b0e263481b898e2dfcfbab8aeba5d06b8 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Thu, 25 Jun 2020 15:11:47 +0200
+Subject: [PATCH 82/87] MMIOT-117: Add parsing of HDCP messages to set HDCP
+ config and read HDCP status
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ core/arch/arm/plat-imx/pta_imx_hdcp.c | 943 ++++++++++++++++++++++++--
+ lib/libutee/include/pta_imx_hdcp.h    |  99 ++-
+ 2 files changed, 989 insertions(+), 53 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/pta_imx_hdcp.c b/core/arch/arm/plat-imx/pta_imx_hdcp.c
+index c1a900d4..6f7d79f2 100644
+--- a/core/arch/arm/plat-imx/pta_imx_hdcp.c
++++ b/core/arch/arm/plat-imx/pta_imx_hdcp.c
+@@ -1,12 +1,24 @@
+ /**
+- * @copyright 2019 NXP
++ * @copyright 2019, 2020 NXP
+  *
+  * @file    pta_imx_hdcp.c
+  *
+  * @brief   Pseudo Trusted Application.\n
+- *			Secure HDCP control (i.MX 8MQ platform)
++ *			Secure HDCP regsiters control (i.MX8MQ platform).
++ *			This is a driver to manage access to HDCP registers,specific to i.MX8MQ.
++ *			This secure driver is DRM agnostic, and so need to rely on
++ *			the HDCP TA supporting Widevine/Playready/... DRM scheme to know is some DRM are being used,
++ *			and to take the right decision accordingly -> block request to disable HDCP or reduce HDCP version.
++ *			This driver rely on the HDCP TA to manage SRM (System Renewability Message).
+  */
+ 
++// TODO
++// Replace some hardceoded digit by #define to make the code more easy to read and update
++// current version supports only 1 HDCP port. The cadence IP supports up to 4 HDMI ports.
++// Add suport of i.MX8QM (Quad Max)
++// Add support of HDCP RX port
++// Add polling mode to get HDCP status
++
+ /* Standard includes */
+ #include <stdlib.h>
+ #include <string.h>
+@@ -29,13 +41,616 @@
+ /* Global includes */
+ #include <tee_api_defines.h>
+ 
+-/** @brief    PTA name */
++/** @brief PTA name */
+ #define HDCP_PTA_NAME "hdcp.pta"
+ 
+ #define IS_ALIGN(x,b) (!(x & (b - 1)))
+ 
++#define MAX_HDCP_MSG_SIZE 1024
++
++// API to invoke the OPTEE TA controling SRM
++#define TA_SECURE_HDCP_CONTROL_UUID \
++	{ 0xfffb3b05, 0xace7, 0x4c3e, \
++		{ 0xb3, 0xba, 0xa7, 0x3c, 0xa0, 0xcb, 0x93, 0xbd} }
++#define TA_SECURE_HDCP_CONTROL_CMD_CHECK_RECEIVER_IS_REVOKED	7
++
++typedef struct {
++	uint32_t data[MAX_HDCP_MSG_SIZE];
++        uint32_t index;
++} hdcp_msg;
++
++typedef struct {
++	hdcp_msg write;
++	hdcp_msg read;
++} hdcp_tx;
++
++hdcp_tx hdcp_tx_config;
++
++uint32_t g_hdcp_number_of_drm_session[TA_SECURE_HDCP_CONTROL_HDCP_PORT]={0};
++
++t_hdcp_set_capability set_config_hdcp_version=HDCP_CAPABILITY_NOT_SET;
++t_hdcp_set_mode set_config_hdcp_mode=HDCP_MODE_NOT_SET;
++t_hdcp_set_type set_config_hdcp_type=HDCP_TYPE_NOT_SET;
++t_hdcp_set_km_key_encrytion set_config_hdcp_km_key_encrytion=HDCP_KM_KEY_ENCRYPTION_NOT_SET;
++t_hdcp_status_authenticated hdcp_status_authenticated=HDCP_STATUS_AUTENTICATED_NOT_SET;
++t_hdcp_status_receiver_hdcp_capability  hdcp_status_receiver_hdcp_capability=HDCP_STATUS_RECEIVER_HDCP_NOT_SET;
++t_hdcp_status_receiver_type hdcp_status_receiver_type=HDCP_STATUS_RECEIVER_TYPE_NOT_SET;
++t_hdcp_status_AuthStreamId hdcp_status_AuthStreamId=HDCP_STATUS_AUTHSTREAMDID_NOT_SET;
++t_hdcp_status_work_with_enable_1_1_features hdcp_status_work_with_enable_1_1_features=HDCP_STATUS_WORK_WITH_ENABLE_1_1_FEATURES_NOT_SET;
++uint8_t hdcp_status_last_error = 0;
++uint8_t hdcp_status_bcaps=0;
++uint16_t hdcp_status_bstatus=0;
++uint8_t hdcp_receiver_id[5];
++
++// few helpers
++static int8_t reset_hdcp_msg( hdcp_tx * msg );
++static void hdcp_tx_status_change_parsing( );
++static int8_t perform_secure_hdcp_read( vaddr_t vhdcp_base, uint32_t offset, uint32_t value );
++static int8_t perform_secure_hdcp_write( vaddr_t vhdcp_base, uint32_t offset, uint32_t value );
+ static vaddr_t get_hdcp_base(uint32_t busId);
+ 
++static int8_t reset_hdcp_msg( hdcp_tx * msg )
++{
++	if (!msg) return -1;
++	msg->write.index=0;
++	msg->read.index=0;
++	return 0;
++}
++
++static void hdcp_tx_status_change_parsing( void )
++{
++	hdcp_tx_config.read.index=0; // Reset read index for next message
++	hdcp_status_authenticated=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+1] & 0b00000001;
++	switch ( hdcp_status_authenticated  )
++	{
++		case HDCP_STATUS_NOT_AUTENTICATED:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_NOT_AUTENTICATED");
++		break;
++
++		case HDCP_STATUS_AUTENTICATED:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_AUTENTICATED");
++		break;
++	}
++
++	hdcp_status_receiver_type=(hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+1] &0b00000010 ) >> 1;
++	switch ( hdcp_status_receiver_type )
++	{
++		case HDCP_STATUS_RECEIVER_TYPE0:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_RECEIVER_TYPE0 (not a repeater)");
++		break;
++
++		case HDCP_STATUS_RECEIVER_TYPE1:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_RECEIVER_TYPE1 (a repeater)");
++		break;
++	}
++
++	hdcp_status_receiver_hdcp_capability=(hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+1] & 0b00001100 ) >> 2;
++	switch ( hdcp_status_receiver_hdcp_capability )
++	{
++		default:
++		case HDCP_STATUS_RECEIVER_HDCP_NOT_SET:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_RECEIVER_HDCP_NOT_SET");
++		break;
++
++		case HDCP_STATUS_RECEIVER_HDCP1:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_RECEIVER_HDCP1");
++		break;
++
++		case HDCP_STATUS_RECEIVER_HDCP2:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_RECEIVER_HDCP2");
++		break;
++	}
++
++	hdcp_status_AuthStreamId=( hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+1] & 0b00010000 ) >> 4;
++	switch ( hdcp_status_AuthStreamId )
++	{
++		case HDCP_STATUS_AUTHSTREAMDID_SUCCESS:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_AUTHSTREAMDID_SUCCESS");
++		break;
++
++		case HDCP_STATUS_AUTHSTREAMDID_FAILED:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_AUTHSTREAMDID_FAILED");
++		break;
++	}
++
++	hdcp_status_last_error=( ( hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+1] & 0b11100000) >> 5 );
++	hdcp_status_last_error|=( ( hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+2] & 0b00000001) <<3 );
++	switch (hdcp_status_last_error)
++	{
++		case HDCP_TX_ERR_NO_ERROR:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_NO_ERROR");
++		break;
++
++		case HDCP_TX_ERR_HPD_IS_DOWN:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_HPD_IS_DOWN");
++		break;
++
++		case HDCP_TX_ERR_SRM_FAILER:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_SRM_FAILER");
++		break;
++
++		case HDCP_TX_ERR_SIGNATURE_VERIFICATION:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_SIGNATURE_VERIFICATION");
++		break;
++
++		case HDCP_TX_ERR_H_TAG_DIFF_H:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_H_TAG_DIFF_H");
++		break;
++
++		case HDCP_TX_ERR_V_TAG_DIFF_V:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_V_TAG_DIFF_V");
++		break;
++
++		case HDCP_TX_ERR_LOCALITY_CHECK:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_LOCALITY_CHECK");
++		break;
++
++		case HDCP_TX_ERR_DDC:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_DDC");
++		break;
++
++		case HDCP_TX_ERR_REAUTH_REQ:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_REAUTH_REQ");
++		break;
++
++		case HDCP_TX_ERR_TOPOLOGY:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_TOPOLOGY");
++		break;
++
++		case HDCP_TX_ERR_VERIFY_RECEIVER_ID_LIST_FAILED:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_VERIFY_RECEIVER_ID_LIST_FAILED");
++		break;
++
++		case HDCP_TX_ERR_HDCP_RSVD1:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_HDCP_RSVD1");
++		break;
++
++		case HDCP_TX_ERR_HDMI_CAPABILITY:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_HDMI_CAPABILITY");
++		break;
++
++		case HDCP_TX_ERR_RI:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_RI");
++		break;
++
++		case HDCP_TX_ERR_WATCHDOG_EXPIRED:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_WATCHDOG_EXPIRED");
++		break;
++
++		case HDCP_TX_ERR_REAPEATER_INTEGRITY_FAILED:
++			EMSG("HDCP_TX_STATUS_CHANGE -> HDCP_TX_ERR_REAPEATER_INTEGRITY_FAILED");
++		break;
++
++		default:
++			EMSG("HDCP_TX_STATUS_CHANGE ->UNDEFINED ERROR !!!");
++		break;
++	}
++
++	hdcp_status_work_with_enable_1_1_features=( ( hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+2] & 0b00000010 ) >> 1 );
++	switch ( hdcp_status_work_with_enable_1_1_features )
++	{
++		case HDCP_STATUS_DO_NOT_WORK_WITH_ENABLE_1_1_FEATURES:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_DO_NOT_WORK_WITH_ENABLE_1_1_FEATURES");
++		break;
++
++		case HDCP_STATUS_WORK_WITH_ENABLE_1_1_FEATURES:
++			DMSG("HDCP_TX_STATUS_CHANGE -> HDCP_STATUS_WORK_WITH_ENABLE_1_1_FEATURES");
++		break;
++	}
++
++	hdcp_status_bcaps=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+3];
++	hdcp_status_bstatus=(hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+4]<<8); //MSB
++	hdcp_status_bstatus+=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE+5]; // LSB
++	DMSG("HDCP_TX_STATUS_CHANGE -> bcaps=0x%x", hdcp_status_bcaps );
++	DMSG("HDCP_TX_STATUS_CHANGE -> bstatus=0x%x", hdcp_status_bstatus );
++}
++
++// Parse all HDCP read access to catch HDCP status
++static int8_t perform_secure_hdcp_read(vaddr_t vhdcp_base, uint32_t offset, uint32_t value)
++{
++	uint16_t size=0;
++
++	if ( !vhdcp_base ) return -1;
++
++	DMSG("perform_secure_hdcp_read address:0x%x offset:%d value:%d index:%d", vhdcp_base, offset, value, hdcp_tx_config.read.index );
++
++	switch ( offset )
++	{
++
++		case 8: // read if HDCP_TX write fifo is ready
++		case 12: // read if HDCP_TX read fifo is ready
++
++		break;
++
++		case 20:
++			// look for:
++			// CDN_API_HDCP_TX_STATUS_REQ: Opcode=0x06 Command=HDCP_TX_STATUS_CHANGE(0x07) size=5 Msg
++			// 			     : Opcode=0x07 Command=HDCP2_TX_IS_KM_STORED_RESP(0x7) size=5 Msg
++			switch (hdcp_tx_config.read.index)
++			{
++				case 0:// Opcode index 0
++					switch (value)
++					{
++						case 0x06:
++							hdcp_tx_config.write.data[hdcp_tx_config.read.index++]=value;
++						break;
++
++						case 0x07:
++							hdcp_tx_config.write.data[hdcp_tx_config.read.index++]=value;
++						break;
++
++						default:
++
++						break;
++					}
++				break;
++
++				case 1: // Command index 1
++					if ( value==0x07 )
++						hdcp_tx_config.read.data[hdcp_tx_config.read.index++]=value;
++					else
++						hdcp_tx_config.read.index=0;
++				break;
++
++				case 2: // Size MSB
++					hdcp_tx_config.read.data[hdcp_tx_config.read.index++]=value;
++				break;
++
++				case 3: // Size LSB
++					hdcp_tx_config.read.data[hdcp_tx_config.read.index++]=value;
++				break;
++
++				default: // playload message
++					size=( hdcp_tx_config.read.data[2] << 8 ) + hdcp_tx_config.read.data[3];
++					DMSG("HDCP_TX_STATUS_CHANGE -> size=%d",size );
++					hdcp_tx_config.read.data[hdcp_tx_config.read.index++]=value;
++					if ( ( size==5 ) && ( hdcp_tx_config.read.index==PTA_HDCP_HEADER_CMD_SIZE + size ) )
++					{
++						switch( hdcp_tx_config.write.data[0] )
++						{
++							case 0x06: // CDN_API_HDCP_TX_STATUS_REQ
++								hdcp_tx_status_change_parsing( );
++							break;
++
++							case 0x07: // HDCP2_TX_IS_KM_STORED_RESP
++								hdcp_receiver_id[0]=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE + 1];
++								hdcp_receiver_id[1]=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE + 2];
++								hdcp_receiver_id[2]=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE + 3];
++								hdcp_receiver_id[4]=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE + 4];
++								hdcp_receiver_id[5]=hdcp_tx_config.read.data[PTA_HDCP_HEADER_CMD_SIZE + 5];
++								DMSG("HDCP Receiver ID=%.2X%.2X%.2X%.2X%.2X",hdcp_receiver_id[0], hdcp_receiver_id[1],hdcp_receiver_id[2],hdcp_receiver_id[3], hdcp_receiver_id[4] );
++							break;
++
++							default:
++
++							break;
++						}
++					}
++					else
++					{
++						if ( hdcp_tx_config.read.index > PTA_HDCP_HEADER_CMD_SIZE + 5 )
++							hdcp_tx_config.read.index=0;
++					}
++				break;
++			}
++		break;
++
++		default:
++			hdcp_tx_config.read.index=0;
++		break;
++	}
++
++	return 0;
++}
++
++// Parse all HDCP write access to control what non secure world is asking to HDCP
++// This function can block some write access if they contradict secure data path, by keeping current values
++static int8_t perform_secure_hdcp_write(vaddr_t vhdcp_base, uint32_t offset,  uint32_t value)
++{
++	uint16_t size=0;
++	TEE_Result res=TEE_SUCCESS;
++	uint16_t hdcp_port_number=0;
++
++	if ( !vhdcp_base ) return -1;
++
++	DMSG("perform_secure_hdcp_write address:%x offset:%d value:%d index:%d", vhdcp_base, offset, value, hdcp_tx_config.write.index );
++
++	switch ( offset )
++	{
++		case 16:
++			// look for CDN_API_HDCP_TX_CONFIGURATION: Opcode=0 Command=HDCP_TX_CONFIGURATION(7) size=1 Msg
++			switch (hdcp_tx_config.write.index)
++			{
++				case 0: // Opcode index 0
++					if ( value==0 ) hdcp_tx_config.write.data[hdcp_tx_config.write.index++]=value;
++				break;
++
++				case 1: // Command index 1
++					if ( value==7 )
++						hdcp_tx_config.write.data[hdcp_tx_config.write.index++]=value;
++					else
++						hdcp_tx_config.write.index=0;
++				break;
++
++				case 2: // Size MSB
++					hdcp_tx_config.write.data[hdcp_tx_config.write.index++]=value;
++				break;
++
++				case 3: // Size LSB
++					hdcp_tx_config.write.data[hdcp_tx_config.write.index++]=value;
++				break;
++
++				case 4: // Message
++					size=( hdcp_tx_config.write.data[2] << 8 ) + hdcp_tx_config.write.data[3];
++					if (size==1)
++					{
++						DMSG("Number of DRM session open :%d", g_hdcp_number_of_drm_session[hdcp_port_number]);
++						// HDCP_TX_CONFIGURATION Message
++						hdcp_tx_config.write.index=0; //reset index for next message
++
++						// Manage Enable/Disable HDCP
++						switch ( ( value & 0b00000100 ) >> 2 )
++						{
++							case DISABLE_HDCP:
++								DMSG("HDCP_TX_CONFIGURATION -> Request to DISABLE_HDCP");
++								if (g_hdcp_number_of_drm_session[hdcp_port_number]==0)
++								{
++									// No security concern.
++									set_config_hdcp_mode=DISABLE_HDCP;
++								}
++								else
++								{
++									EMSG("HDCP_TX_CONFIGURATION -> Block the request to DISABLE_HDCP, and force to enable it");
++									set_config_hdcp_mode=ENABLE_HDCP;
++									value|=0b00000100; // Force to try to keep HDCP enabled
++								}
++							break;
++
++							case ENABLE_HDCP:
++								// No security concern.
++								DMSG("HDCP_TX_CONFIGURATION -> Request to ENABLE_HDCP");
++								set_config_hdcp_mode=ENABLE_HDCP;
++							break;
++						}
++
++						// Manage HDCP version to be supported
++						switch ( value & 0b00000011 )
++						{
++							case HDCP_V2_2_ONLY:
++								// No security concern. This is highest HDCP version i.MX8MQ supports.
++								DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_ONLY");
++								set_config_hdcp_version=HDCP_V2_2_ONLY;
++							break;
++
++							case HDCP_V1_4_ONLY:
++								DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V1_4_ONLY");
++								if (g_hdcp_number_of_drm_session[hdcp_port_number]==0)
++								{
++									// No security concern
++									set_config_hdcp_version=HDCP_V1_4_ONLY;
++								}
++								else
++								{
++									if (hdcp_status_receiver_hdcp_capability==HDCP_STATUS_RECEIVER_HDCP2)
++									{
++										// Current HDCP version between i.MX8MQ and display is HDCP2 and at least one DRM sheme is ongoing
++										switch(set_config_hdcp_version)
++										{
++											// Check previous request
++											case HDCP_V2_2_ONLY:
++												// We force to target same targetted HDCP version as during the previous request
++												value&=0b11111100;
++												set_config_hdcp_version=HDCP_V2_2_ONLY;
++												EMSG("HDCP_TX_CONFIGURATION -> Block the request to set HDCP version to HDCP_V1_4_ONLY");
++											break;
++
++											case HDCP_V1_4_ONLY:
++												EMSG("HDCP_V1_4_ONLY should not be possible. current HDCP version 2 is not possible ???");
++												value&=0b11111100; // let's force HDCP_V2_2_ONLY
++												set_config_hdcp_version=HDCP_V2_2_ONLY;
++											break;
++
++											case HDCP_V2_2_V1_4:
++												// We force to target same targetted HDCP version as during the previous request
++												value&=0b11111100;
++												value|=0b00000010;
++												set_config_hdcp_version=HDCP_V2_2_V1_4;
++												EMSG("HDCP_TX_CONFIGURATION -> Block the request to set HDCP version to HDCP_V1_4_ONLY");
++											break;
++
++											default:
++													EMSG("use case %d not possible ???", set_config_hdcp_version);
++													value&=0b11111100; // let's force HDCP_V2_2_ONLY
++													set_config_hdcp_version=HDCP_V2_2_ONLY;
++											break;
++										}
++									}
++									else if (hdcp_status_receiver_hdcp_capability==HDCP_STATUS_RECEIVER_HDCP1)
++									{
++										switch(set_config_hdcp_version)
++										{
++											// Check previous request
++											case HDCP_V1_4_ONLY:
++												// No security concern
++												DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V1_4_ONLY");
++												set_config_hdcp_version=HDCP_V1_4_ONLY;
++											break;
++
++											case HDCP_V2_2_V1_4:
++												// We force to target same targetted HDCP version as during the previous request
++												value&=0b11111100;
++												value|=0b00000010;
++												EMSG("HDCP_TX_CONFIGURATION -> Block the request to set HDCP version to HDCP_V1_4_ONLY");
++												set_config_hdcp_version=HDCP_V2_2_V1_4;
++											break;
++
++											case HDCP_V2_2_ONLY:
++											default:
++												EMSG("use case %d not possible ???", set_config_hdcp_version);
++												value&=0b11111100; // let's force HDCP_V2_2_ONLY
++												set_config_hdcp_version=HDCP_V2_2_ONLY;
++											break;
++										}
++									}
++									else
++									{
++										// User can do what he wants. There is no HDCP Version, so Widevine/PlayReady TA are not decrypting
++										// content if HDCP is mandatory
++										DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V1_4_ONLY");
++										set_config_hdcp_version=HDCP_V1_4_ONLY;
++									}
++								} // g_hdcp_number_of_drm_session[hdcp_port_number]!=0
++							break;
++
++							case HDCP_V2_2_V1_4:
++									if (g_hdcp_number_of_drm_session[hdcp_port_number]==0)
++									{
++										// No security concern
++										set_config_hdcp_version=HDCP_V2_2_V1_4;
++										DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_V1_4");
++									}
++									else
++									{
++										if (hdcp_status_receiver_hdcp_capability==HDCP_STATUS_RECEIVER_HDCP2)
++										{
++											switch(set_config_hdcp_version)
++											{
++												// Check previous request
++												case HDCP_V2_2_ONLY:
++													// No security concern
++													DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_ONLY");
++													set_config_hdcp_version=HDCP_V2_2_ONLY;
++												break;
++
++												case HDCP_V2_2_V1_4:
++													// No security concern
++													DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_V1_4");
++													set_config_hdcp_version=HDCP_V2_2_V1_4;
++												break;
++
++												case HDCP_V1_4_ONLY:
++													EMSG("HDCP_TX_CONFIGURATION -> Block the request to set HDCP version to HDCP_V1_4_ONLY");
++													set_config_hdcp_version=HDCP_V2_2_V1_4;
++													value&=0b11111100;
++													value|=0b00000010;
++												break;
++
++												default:
++														EMSG("use case %d not possible ???", set_config_hdcp_version);
++														value&=0b11111100; // let's force HDCP_V2_2_ONLY
++														set_config_hdcp_version=HDCP_V2_2_ONLY;
++												break;
++											}
++
++										}
++										else if (hdcp_status_receiver_hdcp_capability==HDCP_STATUS_RECEIVER_HDCP1)
++										{
++											switch(set_config_hdcp_version)
++											{
++												// Check previous request
++												case HDCP_V2_2_V1_4:
++													// No security concern
++													DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_V1_4");
++													set_config_hdcp_version=HDCP_V2_2_V1_4;
++												break;
++
++												case HDCP_V1_4_ONLY:
++													// No security concern
++													DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V1_4_ONLY");
++													set_config_hdcp_version=HDCP_V1_4_ONLY;
++												break;
++
++												case HDCP_V2_2_ONLY:
++													// No security concern
++													DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_ONLY");
++													set_config_hdcp_version=HDCP_V2_2_ONLY;
++												break;
++
++												default:
++														EMSG("use case %d not possible ???", set_config_hdcp_version);
++														value&=0b11111100; // let's force HDCP_V2_2_ONLY
++														set_config_hdcp_version=HDCP_V2_2_ONLY;
++												break;
++											}
++										}
++										else
++										{
++											// User can do what he wants. There is no HDCP Version, so Widevine/PlayReady TA are not decrypting
++											// content if HDCP is mandatory
++											DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_V2_2_V1_4");
++											set_config_hdcp_version=HDCP_V2_2_V1_4;
++										}
++									}// g_hdcp_number_of_drm_session[hdcp_port_number]!=0
++							break;
++
++							default:
++								EMSG("HDCP_TX_CONFIGURATION -> Unsupported HDCP version requested !!!");
++								value&=0b11111100; // let's force HDCP_V2_2_ONLY
++								set_config_hdcp_version=HDCP_V2_2_ONLY;
++							break;
++						} // switch ( value & 0b00000011 )
++
++						// Manage HDCP type to be supported
++						switch ( ( value & 0b00001000 ) >> 3 )
++						{
++							case HDCP_TYPE0:
++								if (g_hdcp_number_of_drm_session[hdcp_port_number]==0)
++								{
++									DMSG("HDCP_TX_CONFIGURATION -> Request to set HDCP_TYPE0 repeater mode allowed");
++									set_config_hdcp_type=HDCP_TYPE0;
++								}
++								else
++								{
++									if ( set_config_hdcp_type==HDCP_TYPE1 )
++									{
++										EMSG("HDCP_TX_CONFIGURATION -> Block the request to allow repeater");
++										value|=0b00001000;
++									}
++								}
++							break;
++
++							case HDCP_TYPE1:
++									// No security concern. We increase security level
++									set_config_hdcp_type=HDCP_TYPE1;
++									DMSG("HDCP_TX_CONFIGURATION -> Request to setHDCP_TYPE1 repeater mode not allowed");
++							break;
++						}
++
++						// Manage HDCP key encryption mode to be supported
++						switch ( ( value & 0b00010000 ) >> 4 )
++						{
++							case HDCP_NO_KM_KEY_ENCRYPTION:
++								set_config_hdcp_km_key_encrytion=HDCP_NO_KM_KEY_ENCRYPTION;
++								DMSG("HDCP_TX_CONFIGURATION -> HDCP_NO_KM_KEY_ENCRYPTION");
++							break;
++
++							case HDCP_KM_KEY_ENCRYPTION:
++								set_config_hdcp_km_key_encrytion=HDCP_KM_KEY_ENCRYPTION;
++								DMSG("HDCP_TX_CONFIGURATION -> HDCP_KM_KEY_ENCRYPTION");
++							break;
++						}
++					}
++					else
++					{
++						//(size!=1)
++						hdcp_tx_config.write.index=0;
++					}
++				break;
++
++				default:
++					hdcp_tx_config.write.index=0;
++				break;
++
++			}
++		break;
++
++		default:
++			hdcp_tx_config.write.index=0;
++		break;
++	}
++	return 0;
++}
++
+ static vaddr_t get_hdcp_base(uint32_t busId)
+ {
+ 	vaddr_t vhdcp_base = (vaddr_t) NULL;
+@@ -60,65 +675,36 @@ static vaddr_t get_hdcp_base(uint32_t busId)
+ 		break;
+ 
+ 		default:
+-			EMSG("Unknown bus");
++			EMSG("Unknown bus %d",busId );
+ 			return (vaddr_t) NULL;
+ 	}
+ 
+ 	vhdcp_base = (vaddr_t) phys_to_virt(phdcp_base, MEM_AREA_IO_SEC);
+ 	if (!vhdcp_base)
+ 	{
+-		DMSG("Map HDCP Registers for bus Id %d", busId);
++		DMSG("Map HDCP registers for bus Id %d", busId);
++
++		if ( busId == PTA_HDCP_HDP_SEC_BUSID )
++		{
++			reset_hdcp_msg(&hdcp_tx_config);
++		}
++
+ 		if (!core_mmu_add_mapping(MEM_AREA_IO_SEC, phdcp_base, ROUNDUP(phdcp_size, CORE_MMU_PGDIR_SIZE)))
+                 {
+-			EMSG("Unable to map HDCP Registers for busId %d", busId );
++			EMSG("Unable to map HDCP Registers for busId %d %x %zu", busId, phdcp_base,phdcp_size  );
+ 			goto out;
+ 		}
+ 		vhdcp_base = (vaddr_t) phys_to_virt(phdcp_base, MEM_AREA_IO_SEC);
+ 	}
+-
+ out:
+ 	return (vaddr_t) vhdcp_base;
+ }
+ 
+-static TEE_Result openSessionEntryPoint(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS], void **sess_ctx)
+-{
+-	uint32_t exp_param_types;
+-	hdcp_session *ctx = NULL;
+-
+-	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+-					TEE_PARAM_TYPE_NONE,
+-					TEE_PARAM_TYPE_NONE,
+-					TEE_PARAM_TYPE_NONE);
+-
+-	DMSG("IMX HDCP openSessionEntryPoint");
+-
+-	if ((param_types != exp_param_types))
+-	{
+-		EMSG("BAD PARAMETERS");
+-		return TEE_ERROR_BAD_PARAMETERS;
+-	}
+-
+-	ctx = malloc(sizeof(hdcp_session));
+-	if (!ctx)
+-	{
+-		return TEE_ERROR_OUT_OF_MEMORY;
+-	}
+-	memset(ctx,0,sizeof(hdcp_session));
+-
+-	ctx->busId = params[0].value.a;
+-
+-	DMSG("Open session for bus %d",ctx->busId);
+-
+-	*sess_ctx = ctx;
+-
+-	return TEE_SUCCESS;
+-}
+-
+ static TEE_Result pta_hdcp_write(hdcp_session *session,uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
+ {
+ 	TEE_Result res = TEE_SUCCESS;
+ 	uint32_t exp_param_types;
+-	uint32_t offset, value, busId;
++	uint32_t offset, value, busId, size;
+ 
+ 	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+ 					TEE_PARAM_TYPE_VALUE_INPUT,
+@@ -136,6 +722,7 @@ static TEE_Result pta_hdcp_write(hdcp_session *session,uint32_t param_types, TEE
+ 	value = params[1].value.b;
+ 
+ 	vaddr_t hdcp_base = get_hdcp_base(busId);
++
+ 	if (!hdcp_base)
+         {
+ 		EMSG("Unable to get the HDCP base address");
+@@ -153,12 +740,13 @@ static TEE_Result pta_hdcp_write(hdcp_session *session,uint32_t param_types, TEE
+ 	switch (busId)
+ 	{
+ 		case PTA_HDCP_HDP_BUSID:
+-			DMSG("HDCP bus");
++			//DMSG("HDCP bus %d write %d", PTA_HDCP_HDP_BUSID, value);
+ 			io_write32(hdcp_base + offset, value);
+ 		break;
+ 
+ 		case PTA_HDCP_HDP_SEC_BUSID:
+-			DMSG("HDCP SECURE bus");
++			DMSG("HDCP SECURE bus %d write %x %d", PTA_HDCP_HDP_BUSID, hdcp_base + offset, value);
++			perform_secure_hdcp_write(hdcp_base,  offset, value);
+ 			io_write32(hdcp_base + offset, value);
+ 		break;
+ 
+@@ -211,11 +799,212 @@ static TEE_Result pta_hdcp_read(hdcp_session *session, uint32_t param_types, TEE
+ 	}
+ 
+ 	params[1].value.a = io_read32(hdcp_base + offset);
++	if ( busId !=0 )perform_secure_hdcp_read(hdcp_base, offset, params[1].value.a);
++
++	//if ( busId !=0 ) DMSG("HDCP bus %d read %x  %d", busId, hdcp_base + offset, params[1].value.a);
+ 
+ out:
+ 	return res;
+ }
+ 
++/**
++ * @brief   Called to know if a device supports SRM and which versions
++ *
++ * @param[in]  session       Session Identifier
++ * @param[in]  param_types    TEE parameters
++ * @param[in]  params		Buffer parameters:
++ *		-param[0]value.a : HDCP port number
++ *
++ * @param[out] params		Buffer parameters:
++ *		- params[1].value.a : 0->SRM not supported, 1->SRM supported.
++ *      - params[1].value.b : 1-> oemcrypto can be used to support SRM update
++ *		- params[2].value.a : SRM version.
++ * @retval TEE_ERROR_BAD_PARAMETERS   Bad parameters
++ */
++static TEE_Result pta_hdcp_get_srm_status(hdcp_session *session, uint32_t param_types, TEE_Param params[4])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_VALUE_OUTPUT,
++					TEE_PARAM_TYPE_VALUE_OUTPUT,
++					TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	params[1].value.a=1; // SRM is supported
++	params[1].value.b=1; // SRM oemcrypto can't be used to support SRM update
++
++	// FIXME read version from SRM files
++	params[2].value.b=0; // SRM version 0
++
++	return res;
++}
++
++/**
++ * @brief   Called to get capability of a current HDCP connexion.
++ *
++ * @param[in]  session    Session Identifier
++ * @param[in]  param_types	TEE parameters
++ * @param[in]  params		Buffer parameters:
++ *		-param[0]value.a : HDCP port number
++ *
++ * @param[out] params		Buffer parameters:
++ *		- params[1].value.a : Current HDCP version
++ *		- params[1].value.a : Maximum HDCP version supported
++ *		- params[2].value.a : receiver is type 1 or type 0
++ * @retval TEE_ERROR_BAD_PARAMETERS   Bad parameters
++ */
++static TEE_Result pta_hdcp_get_status(hdcp_session *session, uint32_t param_types, TEE_Param params[4])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++	uint32_t portId;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_VALUE_OUTPUT,
++					TEE_PARAM_TYPE_VALUE_OUTPUT,
++					TEE_PARAM_TYPE_NONE);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	portId = params[0].value.a;
++	if ( hdcp_status_authenticated==HDCP_STATUS_AUTENTICATED )
++	{
++		// Get current HDCP version
++		switch ( hdcp_status_receiver_hdcp_capability )
++		{
++			case HDCP_STATUS_RECEIVER_HDCP1:
++				params[1].value.a=HDCP_V1;
++			break;
++
++			case HDCP_STATUS_RECEIVER_HDCP2:
++				params[1].value.a=HDCP_V2_2; //HDCP 2.0 and 2.1 are not supported by i.MX8MQ
++			break;
++
++			default:
++			case HDCP_STATUS_RECEIVER_HDCP_NOT_SET:
++				params[1].value.a=HDCP_NONE;
++			break;
++		}
++	}
++	else
++	{
++		params[1].value.a=HDCP_NONE;
++	}
++	params[1].value.b=HDCP_V2_2; 			// Max hdcp version support by i.MX8MQ
++	params[2].value.a=hdcp_status_receiver_type;    // HDCP receiver type 0 or type 1
++
++	return res;
++}
++
++/**
++ * @brief   Called to increase number of DRM session ongoing
++ *
++ * @param[in]  session    Session Identifier
++ * @param[in]  param_types	TEE parameters
++ * @param[in]  params		Buffer parameters:
++ *		-param[0]value.a : HDCP port number
++ *
++ * @param[out] params		Buffer parameters:
++ *	   	-param[3].value.a : number of DRM session for HDCP port param[0]value.a
++ *
++ * @retval TEE_ERROR_BAD_PARAMETERS   Bad parameters
++ */
++static TEE_Result pta_hdcp_open_drm_session(hdcp_session *session, uint32_t param_types, TEE_Param params[4])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++	uint32_t portId;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_VALUE_OUTPUT);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (params[0].value.a>=TA_SECURE_HDCP_CONTROL_HDCP_PORT)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS. HDCP port %d doesn't exist", params[0].value.a);
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (g_hdcp_number_of_drm_session[params[0].value.a]<TA_SECURE_HDCP_CONTROL_MAX_SESSION)
++	{
++		g_hdcp_number_of_drm_session[params[0].value.a]++;
++		params[3].value.a=g_hdcp_number_of_drm_session[params[0].value.a];
++	}
++	else
++	{
++		EMSG("Maximum DRM sessions for hdcp port %d", params[0].value.a);
++		return TEE_ERROR_GENERIC;
++	}
++	return res;
++}
++
++/**
++ * @brief   Called to decrease number of DRM session ongoing
++ *
++ * @param[in]  session    Session Identifier
++ * @param[in]  param_types	TEE parameters
++ * @param[in]  params		Buffer parameters:
++ *		-param[0]value.a : HDCP port number
++ *
++ * @param[out] params		Buffer parameters:
++ *	    -param[3].value.a : number of DRM session for HDCP port param[0]value.a
++ *
++ * @retval TEE_ERROR_BAD_PARAMETERS   Bad parameters
++ */
++static TEE_Result pta_hdcp_close_drm_session(hdcp_session *session, uint32_t param_types, TEE_Param params[4])
++{
++	TEE_Result res = TEE_SUCCESS;
++	uint32_t exp_param_types;
++	uint32_t portId;
++
++	exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_VALUE_OUTPUT);
++
++	if (param_types != exp_param_types)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (params[0].value.a>=TA_SECURE_HDCP_CONTROL_HDCP_PORT)
++	{
++		EMSG("PTA HDCP BAD PARAMETERS. HDCP port %d doesn't exist", params[0].value.a);
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (g_hdcp_number_of_drm_session[params[0].value.a]>0)
++	{
++		g_hdcp_number_of_drm_session[params[0].value.a]--;
++		params[3].value.a=g_hdcp_number_of_drm_session[params[0].value.a];
++	}
++	else
++	{
++		EMSG("NO DRM sessions to close for hdcp port %d", params[0].value.a);
++		return TEE_ERROR_GENERIC;
++	}
++	return res;
++}
++
+ /**
+  * @brief   Called when a pseudo TA is invoked.
+  *
+@@ -229,15 +1018,39 @@ out:
+ static TEE_Result invokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
+ 	uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS])
+ {
+-	hdcp_session *session = (hdcp_session*)sess_ctx;
+-
++	hdcp_session *session = (hdcp_session*) sess_ctx;
++	struct tee_ta_session *ta_session=tee_ta_get_calling_session(); // Identify if the caller is secure (TA or PTA) or not(CA)
+ 	switch (cmd_id)
+-        {
++    {
+ 		case PTA_HDCP_CMD_WRITE:
+-			return pta_hdcp_write(session,param_types,params);
++			return pta_hdcp_write(session, param_types, params);
+ 
+ 		case PTA_HDCP_CMD_READ:
+-			return pta_hdcp_read(session,param_types,params);
++			return pta_hdcp_read(session, param_types, params);
++
++		case PTA_HDCP_CMD_GET_STATUS:
++			return pta_hdcp_get_status(session, param_types, params);
++
++		case PTA_HDCP_CMD_GET_SRM_STATUS:
++			return pta_hdcp_get_srm_status(session, param_types, params);
++
++		case PTA_HDCP_CMD_OPEN_DRM_SESSION:
++			if (!ta_session)
++			{
++				EMSG("ACCESS_DENIED. A Client Application is not allowed to invoke me");
++				return TEE_ERROR_ACCESS_DENIED;
++			}
++			else
++				return pta_hdcp_open_drm_session(session, param_types, params);
++
++		case PTA_HDCP_CMD_CLOSE_DRM_SESSION:
++			if (!ta_session)
++			{		
++				EMSG("ACCESS_DENIED. A Client Application is not allowed to invoke me");
++				return TEE_ERROR_ACCESS_DENIED;
++			}
++			else
++				return pta_hdcp_close_drm_session(session, param_types, params);
+ 
+ 		default:
+ 			EMSG("Unknown command");
+@@ -245,10 +1058,42 @@ static TEE_Result invokeCommandEntryPoint(void *sess_ctx, uint32_t cmd_id,
+ 	}
+ }
+ 
++static TEE_Result openSessionEntryPoint(uint32_t param_types, TEE_Param params[TEE_NUM_PARAMS], void **sess_ctx)
++{
++	hdcp_session *ctx = NULL;
++
++	uint32_t exp_param_types = TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE,
++					TEE_PARAM_TYPE_NONE);
++
++	DMSG("IMX HDCP openSessionEntryPoint");
++
++	if (params!=NULL && param_types!=exp_param_types)
++	{
++			EMSG("PTA HDCP BAD PARAMETERS");
++			return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	ctx = malloc(sizeof(hdcp_session));
++	if (!ctx)
++	{
++		return TEE_ERROR_OUT_OF_MEMORY;
++	}
++	memset(ctx,0,sizeof(hdcp_session));
++
++	ctx->busId = params[0].value.a;
++	DMSG("Open session for bus ID %d", ctx->busId);
++	*sess_ctx = ctx;
++
++	return TEE_SUCCESS;
++}
++
+ static void closeSessionEntryPoint(void *sess_ctx)
+ {
+ 	if (sess_ctx)
+ 	{
++		DMSG("Close session for bus ID %d", sess_ctx->busId);
+ 		free(sess_ctx);
+ 	}
+ }
+diff --git a/lib/libutee/include/pta_imx_hdcp.h b/lib/libutee/include/pta_imx_hdcp.h
+index 9272ce23..98660a89 100644
+--- a/lib/libutee/include/pta_imx_hdcp.h
++++ b/lib/libutee/include/pta_imx_hdcp.h
+@@ -1,7 +1,7 @@
+ /**
+  * @copyright 2019 NXP
+  *
+- * @file    pta_hcp.h
++ * @file    pta_imx_hdcp.h
+  *
+  * @brief   Generator of the PTA UUID (i.MX8M platform).
+  */
+@@ -20,13 +20,104 @@
+ #define PTA_HDCP_RESET_REGISTER_BA    	0x32e2f000
+ #define PTA_HDCP_RESET_REGISTER_SIZE	0x10
+ 
++#define PTA_HDCP_HEADER_CMD_SIZE	4
++
+ #define PTA_HDCP_HDP_BUSID		0
+ #define PTA_HDCP_HDP_SEC_BUSID		1
+ #define PTA_HDCP_RESET_BUSID		2
+ 
+-#define PTA_HDCP_CMD_WRITE 		0
+-#define PTA_HDCP_CMD_READ 		1
+-#define PTA_HDCP_CMD_GET_CAPABILITY	2
++#define PTA_HDCP_CMD_WRITE		0
++#define PTA_HDCP_CMD_READ		1
++#define PTA_HDCP_CMD_GET_STATUS		2
++#define PTA_HDCP_CMD_GET_SRM_STATUS	3
++#define PTA_HDCP_CMD_OPEN_DRM_SESSION	4
++#define PTA_HDCP_CMD_CLOSE_DRM_SESSION	5
++
++#define TA_SECURE_HDCP_CONTROL_HDCP_PORT 1
++#define TA_SECURE_HDCP_CONTROL_MAX_SESSION 65535
++
++typedef enum e_hdcp_set_capability {
++	HDCP_V2_2_ONLY = 0, 		// force HDCP version 2.2
++	HDCP_V1_4_ONLY = 1, 		// force HDCP version 1.4
++	HDCP_V2_2_V1_4 = 2, 		// support both HDCP - It will always try the first 2.2 and if the receiver does not support 2.2, then try 1.4
++	HDCP_CAPABILITY_NOT_SET
++} t_hdcp_set_capability;
++
++typedef enum e_hdcp_set_mode {
++	DISABLE_HDCP = 0,
++	ENABLE_HDCP = 1,
++	HDCP_MODE_NOT_SET
++} t_hdcp_set_mode;
++
++typedef enum e_hdcp_set_type {
++	HDCP_TYPE0 = 0,
++	HDCP_TYPE1 = 1,
++	HDCP_TYPE_NOT_SET
++} t_hdcp_set_type;
++
++typedef enum e_hdcp_set_km_key_encrytion {
++	HDCP_NO_KM_KEY_ENCRYPTION = 0,
++	HDCP_KM_KEY_ENCRYPTION = 1,
++	HDCP_KM_KEY_ENCRYPTION_NOT_SET
++} t_hdcp_set_km_key_encrytion;
++
++typedef enum e_hdcp_status_authenticated {
++	HDCP_STATUS_NOT_AUTENTICATED=0,
++	HDCP_STATUS_AUTENTICATED=1,
++	HDCP_STATUS_AUTENTICATED_NOT_SET
++} t_hdcp_status_authenticated;
++
++typedef enum e_hdcp_status_receiver_type {
++	HDCP_STATUS_RECEIVER_TYPE0=0,
++	HDCP_STATUS_RECEIVER_TYPE1=1,
++	HDCP_STATUS_RECEIVER_TYPE_NOT_SET
++} t_hdcp_status_receiver_type;
++
++typedef enum e_hdcp_status_receiver_hdcp_capability {
++	HDCP_STATUS_RECEIVER_HDCP_NOT_SET=0,
++	HDCP_STATUS_RECEIVER_HDCP1=1,
++	HDCP_STATUS_RECEIVER_HDCP2=2
++} t_hdcp_status_receiver_hdcp_capability;
++
++typedef enum e_hdcp_status_AuthStreamId {
++	HDCP_STATUS_AUTHSTREAMDID_SUCCESS=0,
++	HDCP_STATUS_AUTHSTREAMDID_FAILED=1,
++	HDCP_STATUS_AUTHSTREAMDID_NOT_SET
++} t_hdcp_status_AuthStreamId;
++
++typedef enum e_hdcp_status_work_with_enable_1_1_features {
++	HDCP_STATUS_DO_NOT_WORK_WITH_ENABLE_1_1_FEATURES=0,
++	HDCP_STATUS_WORK_WITH_ENABLE_1_1_FEATURES=1,
++	HDCP_STATUS_WORK_WITH_ENABLE_1_1_FEATURES_NOT_SET
++} t_hdcp_status_work_with_enable_1_1_features;
++
++typedef enum e_hdcp_status_error_type{
++	HDCP_TX_ERR_NO_ERROR=0,
++	HDCP_TX_ERR_HPD_IS_DOWN=1,
++	HDCP_TX_ERR_SRM_FAILER=2,
++	HDCP_TX_ERR_SIGNATURE_VERIFICATION=3,
++	HDCP_TX_ERR_H_TAG_DIFF_H=4,
++	HDCP_TX_ERR_V_TAG_DIFF_V=5,
++	HDCP_TX_ERR_LOCALITY_CHECK=6,
++	HDCP_TX_ERR_DDC=7,
++	HDCP_TX_ERR_REAUTH_REQ=8,
++	HDCP_TX_ERR_TOPOLOGY=9,
++	HDCP_TX_ERR_VERIFY_RECEIVER_ID_LIST_FAILED=0xa,
++	HDCP_TX_ERR_HDCP_RSVD1=0xb,
++	HDCP_TX_ERR_HDMI_CAPABILITY=0xc,
++	HDCP_TX_ERR_RI=0xd,
++	HDCP_TX_ERR_WATCHDOG_EXPIRED=0xe,
++	HDCP_TX_ERR_REAPEATER_INTEGRITY_FAILED=0xf
++} t_hdcp_status_error_type;
++
++typedef enum e_HDCP_Capability {
++  HDCP_NONE	= 0,  // No HDCP supported, no secure data path.
++  HDCP_V1	= 1,  // HDCP version 1.0
++  HDCP_V2	= 2,  // HDCP version 2.0
++  HDCP_V2_1	= 3,  // HDCP version 2.1
++  HDCP_V2_2	= 4,   // HDCP version 2.2 (type 1 required)
++  HDCP_NO_DIGITAL_OUTPUT = 0xff  // No digital output.
++} t_HDCP_Capability;
+ 
+ typedef struct hdcp_session {
+ 	uint32_t busId;
+-- 
+2.17.1
+

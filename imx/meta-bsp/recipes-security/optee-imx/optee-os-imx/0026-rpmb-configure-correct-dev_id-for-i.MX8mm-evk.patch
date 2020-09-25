@@ -1,0 +1,32 @@
+From 0f77738f0a8c37ea3fa879136d9c865b4ee86f15 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Wed, 27 Feb 2019 17:37:42 +0100
+Subject: [PATCH 26/87] rpmb: configure correct dev_id for i.MX8mm evk
+
+i.MX8mm EVK board uses dev_id 2 to access MMC chip
+
+please note that on uboot this same chip is identified with dev_id 1
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 7a981fc3..ad2979cd 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -331,8 +331,8 @@ CFG_UART_BASE ?= UART2_BASE
+ 
+ CFG_RPMB_FS ?= y
+ CFG_RPMB_TESTKEY ?= y
+-CFG_RPMB_FS_DEV_ID ?= 1
+-CFG_RPMB_FS_DEBUG_DATA = y
++CFG_RPMB_FS_DEV_ID ?= 2
++CFG_RPMB_FS_DEBUG_DATA = n
+ $(call force,CFG_RPMB_WRITE_KEY,n)
+ CFG_IN_TREE_EARLY_TAS += avb/023f8f1a-292a-432b-8fc4-de8471358067
+ endif
+-- 
+2.17.1
+

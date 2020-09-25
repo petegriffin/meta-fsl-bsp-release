@@ -1,0 +1,33 @@
+From 40506e5063859aa0a9cc299d9a17ee3cc0bee33a Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Fri, 3 Apr 2020 13:14:29 +0200
+Subject: [PATCH 38/87] core: driver: disable CAAM ECC
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index c7a758bd..a81cd501 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -94,7 +94,6 @@ endif
+ 
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP)), y)
+-$(eval $(call cryphw-enable-drv-hw, ECC))
+ $(eval $(call cryphw-enable-drv-hw, MP))
+ $(eval $(call cryphw-enable-drv-hw, DH))
+ CFG_PTA_MP ?= y
+@@ -102,6 +101,7 @@ endif
+ 
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP) $(CFG_MX8MQ) $(CFG_MX8MM)), y)
++$(eval $(call cryphw-enable-drv-hw, ECC))
+ $(eval $(call cryphw-enable-drv-hw, RSA))
+ endif
+ 
+-- 
+2.17.1
+

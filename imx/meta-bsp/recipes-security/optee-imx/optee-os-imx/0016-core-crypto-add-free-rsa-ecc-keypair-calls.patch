@@ -1,0 +1,78 @@
+From 856756a1c8a77a6cacb45975c00a7c1fa19c8f62 Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Mon, 20 Aug 2018 11:59:09 +0300
+Subject: [PATCH 16/87] core: crypto: add free rsa/ecc keypair calls
+
+Introduce crypto_acipher_free_rsa_keypair() and
+crypto_acipher_free_ecc_keypair calls.
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+---
+ core/include/crypto/crypto.h |  2 ++
+ core/lib/libtomcrypt/ecc.c   |  7 +++++++
+ core/lib/libtomcrypt/rsa.c   | 11 +++++++++++
+ 3 files changed, 20 insertions(+)
+
+diff --git a/core/include/crypto/crypto.h b/core/include/crypto/crypto.h
+index e19a6537..b98b2626 100644
+--- a/core/include/crypto/crypto.h
++++ b/core/include/crypto/crypto.h
+@@ -179,6 +179,7 @@ struct ecc_keypair {
+  */
+ TEE_Result crypto_acipher_alloc_rsa_keypair(struct rsa_keypair *s,
+ 				size_t key_size_bits);
++void crypto_acipher_free_rsa_keypair(struct rsa_keypair *s);
+ TEE_Result crypto_acipher_alloc_rsa_public_key(struct rsa_public_key *s,
+ 				   size_t key_size_bits);
+ void crypto_acipher_free_rsa_public_key(struct rsa_public_key *s);
+@@ -193,6 +194,7 @@ TEE_Result crypto_acipher_alloc_ecc_public_key(struct ecc_public_key *s,
+ TEE_Result crypto_acipher_alloc_ecc_keypair(struct ecc_keypair *s,
+ 				size_t key_size_bits);
+ void crypto_acipher_free_ecc_public_key(struct ecc_public_key *s);
++void crypto_acipher_free_ecc_keypair(struct ecc_keypair *s);
+ 
+ /*
+  * Key generation functions
+diff --git a/core/lib/libtomcrypt/ecc.c b/core/lib/libtomcrypt/ecc.c
+index 48ed04d2..31b9ccbb 100644
+--- a/core/lib/libtomcrypt/ecc.c
++++ b/core/lib/libtomcrypt/ecc.c
+@@ -31,6 +31,13 @@ err:
+ 	return TEE_ERROR_OUT_OF_MEMORY;
+ }
+ 
++void crypto_acipher_free_ecc_keypair(struct ecc_keypair *s)
++{
++	crypto_bignum_free(s->d);
++	crypto_bignum_free(s->x);
++	crypto_bignum_free(s->y);
++}
++
+ TEE_Result crypto_acipher_alloc_ecc_public_key(struct ecc_public_key *s,
+ 					       size_t key_size_bits __unused)
+ {
+diff --git a/core/lib/libtomcrypt/rsa.c b/core/lib/libtomcrypt/rsa.c
+index 912aad71..481974ae 100644
+--- a/core/lib/libtomcrypt/rsa.c
++++ b/core/lib/libtomcrypt/rsa.c
+@@ -119,6 +119,17 @@ err:
+ 	return TEE_ERROR_OUT_OF_MEMORY;
+ }
+ 
++void crypto_acipher_free_rsa_keypair(struct rsa_keypair *s)
++{
++	crypto_bignum_free(s->e);
++	crypto_bignum_free(s->d);
++	crypto_bignum_free(s->n);
++	crypto_bignum_free(s->p);
++	crypto_bignum_free(s->q);
++	crypto_bignum_free(s->qp);
++	crypto_bignum_free(s->dp);
++}
++
+ TEE_Result crypto_acipher_alloc_rsa_public_key(struct rsa_public_key *s,
+ 					       size_t key_size_bits __unused)
+ {
+-- 
+2.17.1
+

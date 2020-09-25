@@ -1,0 +1,99 @@
+From 2a759426edecfb77fc01fd5d989dd8eb83a6d190 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Thu, 7 May 2020 12:19:15 +0200
+Subject: [PATCH 77/87] TEE-559 drivers: caam: do not add overlay node for SCU
+ based i.MX8
+
+on SCU based i.MX 8 SOC (like 8Qm, 8QXP, 8DXL), u-boot queries
+SCFW for peripherals owned by Linux, and disable the node in
+consequence. There is no need to do it in OP-TEE.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+Fixes: bbfa15c0d97b ("TEE-465: drivers: caam: disable job ring through fdt overlay")
+---
+ core/arch/arm/plat-imx/crypto_conf.mk         |  5 ++
+ .../crypto/caam/hal/common/hal_cfg_dt.c       | 49 ++++++++++---------
+ 2 files changed, 32 insertions(+), 22 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 02eae54a..7a788745 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -72,6 +72,11 @@ $(call force, CFG_JR_INDEX,0)  # Default JR index used
+ $(call force, CFG_JR_INT,137)  # Default JR IT Number (105 + 32) = 137
+ endif
+ 
++# if CFG_DT is enable disable JR Node if taken by OP-TEE
++# i.MX 8 with scfw do not need this option.
++ifneq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX) $(CFG_MX8DXL)), y)
++$(call force, CFG_CAAM_JR_DISABLE_NODE,y)
++endif
+ #
+ # Enable HUK CAAM Generation
+ #
+diff --git a/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c b/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
+index 17a0272e..704e1613 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
++++ b/core/drivers/crypto/caam/hal/common/hal_cfg_dt.c
+@@ -123,31 +123,36 @@ void caam_hal_cfg_get_jobring_dt(void *fdt, struct caam_jrcfg *jrcfg)
+ 
+ void caam_hal_cfg_disable_jobring_dt(void *fdt, struct caam_jrcfg *jrcfg)
+ {
+-	int node = fdt_node_offset_by_compatible(fdt, 0, dt_jr_match_table);
++	if (IS_ENABLED(CFG_CAAM_JR_DISABLE_NODE)) {
++		int node = fdt_node_offset_by_compatible(fdt, 0,
++							 dt_jr_match_table);
+ 
+-	for (; node != -FDT_ERR_NOTFOUND;
+-	     node = fdt_node_offset_by_compatible(fdt, node,
+-						  dt_jr_match_table)) {
+-		HAL_TRACE("Found Job Ring node @%" PRId32, node);
+-		if (_fdt_reg_base_address(fdt, node) == jrcfg->offset) {
+-			HAL_TRACE("Disable Job Ring node @%" PRId32, node);
+-			if (dt_enable_secure_status(fdt, node))
+-				panic();
+-			break;
++		for (; node != -FDT_ERR_NOTFOUND;
++		     node = fdt_node_offset_by_compatible(fdt, node,
++							  dt_jr_match_table)) {
++			HAL_TRACE("Found Job Ring node @%" PRId32, node);
++			if (_fdt_reg_base_address(fdt, node) == jrcfg->offset) {
++				HAL_TRACE("Disable Job Ring node @%" PRId32,
++					  node);
++				if (dt_enable_secure_status(fdt, node))
++					panic();
++				break;
++			}
+ 		}
+-	}
+ 
+-	if (IS_ENABLED(CFG_EXTERNAL_DTB_OVERLAY)) {
+-		if (node == -FDT_ERR_NOTFOUND) {
+-			char target[64];
+-			int ret;
+-
+-			ret = snprintf(target, sizeof(target),
+-				       DTB_JR_PATH "@%lx", jrcfg->offset);
+-			if (ret < 0 || (size_t)ret >= sizeof(target))
+-				panic();
+-			if (dt_overlay_disable_node(target))
+-				panic();
++		if (IS_ENABLED(CFG_EXTERNAL_DTB_OVERLAY)) {
++			if (node == -FDT_ERR_NOTFOUND) {
++				char target[64];
++				int ret;
++
++				ret = snprintf(target, sizeof(target),
++					       DTB_JR_PATH "@%lx",
++					       jrcfg->offset);
++				if (ret < 0 || (size_t)ret >= sizeof(target))
++					panic();
++				if (dt_overlay_disable_node(target))
++					panic();
++			}
+ 		}
+ 	}
+ }
+-- 
+2.17.1
+

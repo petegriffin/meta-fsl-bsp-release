@@ -1,0 +1,81 @@
+From 4650e5d212005fb9fef354f5e506ab66665536cd Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Fri, 28 Feb 2020 20:08:40 +0100
+Subject: [PATCH 04/87] TEE-517 core: imx: Add dynamic shared memory
+ configuration
+
+Add dynamic share memory configuration. Enable it for
+i.MX 8mscale family except for i.MX 8MP
+Enable DEK Blob support, and put a warning if dynamic share
+memory is not enabled, as it depends on this feature.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+(cherry picked from commit dda69050abc968bee6dc2e56825f98d6a2f648b8)
+---
+ core/arch/arm/plat-imx/conf.mk           |  4 ++++
+ core/arch/arm/plat-imx/main.c            |  7 +++++++
+ core/arch/arm/plat-imx/platform_config.h | 17 +++++++++++++++++
+ 3 files changed, 28 insertions(+)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 85b685a9..6ac796d8 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -469,6 +469,10 @@ CFG_CRYPTO_DRIVER ?= y
+ # DRV_DBG_TRACE BIT32(0) // Driver trace
+ # DRV_DBG_BUF   BIT32(1) // Driver dump Buffer
+ CFG_CRYPTO_DRIVER_DEBUG ?= 0
++# Enable DEK Blob feature by default on i.MX 8mscale family.
++ifneq (,$(filter y, $(CFG_MX8MQ) $(CFG_MX8MM) $(CFG_MX8MN)))
++CFG_IMX_DEK_HAB ?=y
++endif
+ else
+ $(call force,CFG_CRYPTO_DRIVER,n)
+ $(call force,CFG_WITH_SOFTWARE_PRNG,y)
+diff --git a/core/arch/arm/plat-imx/main.c b/core/arch/arm/plat-imx/main.c
+index aa6b6136..7ace565c 100644
+--- a/core/arch/arm/plat-imx/main.c
++++ b/core/arch/arm/plat-imx/main.c
+@@ -124,6 +124,13 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC,
+ 			CORE_MMU_PGDIR_SIZE);
+ #endif
+ 
++#ifdef DRAM0_NSEC_SIZE
++register_dynamic_shm(DRAM0_NSEC_BASE, DRAM0_NSEC_SIZE);
++#endif
++#ifdef DRAM1_NSEC_SIZE
++register_dynamic_shm(DRAM1_NSEC_BASE, DRAM1_NSEC_SIZE);
++#endif
++
+ const struct thread_handlers *generic_boot_get_handlers(void)
+ {
+ 	return &handlers;
+diff --git a/core/arch/arm/plat-imx/platform_config.h b/core/arch/arm/plat-imx/platform_config.h
+index 900156db..1d05e426 100644
+--- a/core/arch/arm/plat-imx/platform_config.h
++++ b/core/arch/arm/plat-imx/platform_config.h
+@@ -66,4 +66,21 @@
+ #include <config/imx6sll.h>
+ #endif
+ 
++/*
++ * Calculate Non Secure memory region, after Secure memory carved out.
++ * Assumption is memory for TEE is 32M
++ * Those defines are used to register dynamic shared memory
++ * Currently enable only mscale family except 8MP.
++ */
++#if defined(CFG_MX8MQ) || defined(CFG_MX8MM) || defined(CFG_MX8MN)
++#define DRAM0_NSEC_BASE CFG_DRAM_BASE
++#define DRAM0_NSEC_SIZE (CFG_TZDRAM_START - CFG_DRAM_BASE)
++#define DRAM1_NSEC_BASE (CFG_TZDRAM_START + 0x2000000)
++#define DRAM1_NSEC_SIZE (CFG_DDR_SIZE - DRAM1_NSEC_BASE)
++#endif
++
++#if defined(CFG_IMX_DEK_HAB) && !defined(DRAM0_NSEC_SIZE)
++#warning HAB DEK Blob is enabled but it requires dynamic shared memory \
++and this feature is not enabled !!
++#endif
+ #endif /*PLATFORM_CONFIG_H*/
+-- 
+2.17.1
+

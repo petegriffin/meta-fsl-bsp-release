@@ -1,0 +1,40 @@
+From 986206a65394449693cc3a6467830f9092407ebe Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Tue, 19 Jun 2018 09:04:22 +0300
+Subject: [PATCH 20/87] libutee: remove restrictions for TEE_ALG_RSA_NOPAD
+
+Remove restrictions for TEE_ALG_RSA_NOPAD algorithm modes supported
+by OP-TEE OS crypto layer. TEE_ALG_RSA_NOPAD algorithm can be used also in
+TEE_MODE_VERIFY and TEE_MODE_SIGN operations.
+
+Signing/Verification operations using NOPAD mode are verified by these AOSP
+Keymaster VTS tests:
+- SigningOperationsTest.RsaShortMessage
+- VerificationOperationsTest.RsaSuccess
+
+[1]: https://android.googlesource.com/platform/hardware/interfaces/+/oreo-cts-release/keymaster/3.0/vts/functional/keymaster_hidl_hal_test.cpp
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+---
+ lib/libutee/tee_api_operations.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/libutee/tee_api_operations.c b/lib/libutee/tee_api_operations.c
+index e91af608..eed700dc 100644
+--- a/lib/libutee/tee_api_operations.c
++++ b/lib/libutee/tee_api_operations.c
+@@ -183,9 +183,9 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
+ 		break;
+ 
+ 	case TEE_ALG_RSA_NOPAD:
+-		if (mode == TEE_MODE_ENCRYPT) {
++		if (mode == TEE_MODE_ENCRYPT || mode == TEE_MODE_VERIFY) {
+ 			req_key_usage = TEE_USAGE_ENCRYPT | TEE_USAGE_VERIFY;
+-		} else if (mode == TEE_MODE_DECRYPT) {
++		} else if (mode == TEE_MODE_DECRYPT || mode == TEE_MODE_SIGN) {
+ 			with_private_key = true;
+ 			req_key_usage = TEE_USAGE_DECRYPT | TEE_USAGE_SIGN;
+ 		} else {
+-- 
+2.17.1
+

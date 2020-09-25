@@ -1,0 +1,70 @@
+From 05a97ac8a32a9b15be0ce8f47cde7ddae4d64480 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Thu, 16 Apr 2020 20:52:02 +0200
+Subject: [PATCH 63/87] TEE-546 drivers: caam: disable interrupts for i.MX 7ULP
+
+i.MX 7ULP CAAM IP is using a single interrupt line
+for the 2 job rings.
+Disable the use of interrupts in OP-TEE.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk        | 6 ++++++
+ core/drivers/crypto/caam/caam_jr.c           | 4 ++--
+ core/drivers/crypto/caam/hal/common/hal_jr.c | 3 ++-
+ 3 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index 21f3911c..dcd826aa 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -28,6 +28,12 @@ CFG_DBG_CAAM_TRACE ?= 0x2
+ CFG_DBG_CAAM_DESC ?= 0x0
+ CFG_DBG_CAAM_BUF ?= 0x0
+ 
++ifeq ($(CFG_MX7ULP), y)
++# i.MX 7ULP is sharing one single line of interrupt for the 2 Job Ring interfaces
++# disable the use of interrupts in OP-TEE.
++$(call force, CFG_CAAM_NO_ITR,y)
++endif
++
+ ifeq ($(filter y, $(CFG_MX8QM) $(CFG_MX8QX)),y)
+ # Due to the CAAM DMA behaviour on iMX8QM & iMX8QX, 4 bytes need to be add to
+ # the buffer size when aligned memory allocation is done
+diff --git a/core/drivers/crypto/caam/caam_jr.c b/core/drivers/crypto/caam/caam_jr.c
+index 49eeca7b..4a64bb2e 100644
+--- a/core/drivers/crypto/caam/caam_jr.c
++++ b/core/drivers/crypto/caam/caam_jr.c
+@@ -572,12 +572,12 @@ enum caam_status caam_jr_init(struct caam_jrcfg *jrcfg)
+ 	jr_privdata->it_handler.flags = ITRF_TRIGGER_LEVEL;
+ 	jr_privdata->it_handler.handler = caam_jr_irqhandler;
+ 	jr_privdata->it_handler.data = jr_privdata;
+-
++#if !defined(CFG_CAAM_NO_ITR)
+ #ifdef CFG_NXP_CAAM_RUNTIME_JR
+ 	itr_add(&jr_privdata->it_handler);
+ #endif
+ 	caam_hal_jr_enable_itr(jr_privdata->baseaddr);
+-
++#endif
+ 	retstatus = CAAM_NO_ERROR;
+ 
+ end_init:
+diff --git a/core/drivers/crypto/caam/hal/common/hal_jr.c b/core/drivers/crypto/caam/hal/common/hal_jr.c
+index df74f0ac..03b2706f 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_jr.c
++++ b/core/drivers/crypto/caam/hal/common/hal_jr.c
+@@ -216,8 +216,9 @@ enum caam_status caam_hal_jr_flush(vaddr_t baseaddr)
+ void caam_hal_jr_resume(vaddr_t baseaddr)
+ {
+ 	io_caam_write32(baseaddr + JRX_JRINTR, JRINTR_HALT_RESUME);
+-
++#if !defined(CFG_CAAM_NO_ITR)
+ 	caam_hal_jr_enable_itr(baseaddr);
++#endif
+ }
+ 
+ uint8_t caam_hal_jr_input_index(vaddr_t baseaddr)
+-- 
+2.17.1
+

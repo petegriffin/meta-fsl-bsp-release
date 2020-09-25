@@ -1,0 +1,55 @@
+From 6350f40238e5ac27b50db2fc640ee5edbd14bb49 Mon Sep 17 00:00:00 2001
+From: Cedric Neveux <cedric.neveux@nxp.com>
+Date: Tue, 16 Jun 2020 16:38:58 +0200
+Subject: [PATCH 52/87] TEE-526 drivers: caam: add SDP Memory cacheability
+ verification
+
+In case of buffer in the SDP Memory, the cacheability must be retrieved
+from the mobj(s) allocated at boot when default_mobj_init is executed.
+If the buffer is part of the SDP Memory, call the
+tee_entry_is_sdp_cached function.
+
+Signed-off-by: Cedric Neveux <cedric.neveux@nxp.com>
+---
+ core/drivers/crypto/caam/utils/utils_mem.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/utils/utils_mem.c b/core/drivers/crypto/caam/utils/utils_mem.c
+index 348c6723..46128b6a 100644
+--- a/core/drivers/crypto/caam/utils/utils_mem.c
++++ b/core/drivers/crypto/caam/utils/utils_mem.c
+@@ -11,6 +11,7 @@
+ #include <caam_utils_mem.h>
+ #include <mm/core_memprot.h>
+ #include <mm/tee_mmu.h>
++#include <tee/entry_std.h>
+ #include <string.h>
+ 
+ /*
+@@ -357,7 +358,7 @@ enum caam_status caam_sgtbuf_alloc(struct caamsgtbuf *data)
+ bool caam_mem_is_cached_buf(void *buf, size_t size)
+ {
+ 	enum teecore_memtypes mtype = MEM_AREA_MAXTYPE;
+-	bool is_cached = false;
++	bool is_cached = true;
+ 
+ 	/*
+ 	 * First check if the buffer is a known memory area mapped
+@@ -366,10 +367,11 @@ bool caam_mem_is_cached_buf(void *buf, size_t size)
+ 	 * it cacheable
+ 	 */
+ 	mtype = core_mmu_get_type_by_pa(virt_to_phys(buf));
+-	if (mtype == MEM_AREA_MAXTYPE)
+-		is_cached = true;
+-	else
++
++	if (mtype != MEM_AREA_MAXTYPE)
+ 		is_cached = core_vbuf_is(CORE_MEM_CACHED, buf, size);
++	else if (core_vbuf_is(CORE_MEM_SDP_MEM, buf, size))
++		is_cached = tee_entry_is_sdp_cached();
+ 
+ 	return is_cached;
+ }
+-- 
+2.17.1
+

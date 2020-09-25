@@ -1,0 +1,49 @@
+From dfb25966d582e1bccc28b1195009d0253304559d Mon Sep 17 00:00:00 2001
+From: Jerome Forissier <jerome@forissier.org>
+Date: Wed, 29 Apr 2020 15:35:00 +0200
+Subject: [PATCH 45/87] libmbedtls: mbedtls_mpi_shrink(): fix possible unwanted
+ truncation
+
+If mbedtls_mpi_shrink() is passed a value for nblimbs that is smaller
+than the minimum number of limbs required to store the big number, the
+current implementation will unexpectedly truncate the number to the
+requested size. It should use the minimal size instead in order not to
+corrupt the bigum value.
+
+This issue was introduced in [1] probably as a result of a bad copy
+and paste from mbedtls_mpi_grow().
+
+Fixes: [1] commit 98bd5fe350be ("libmbedtls: add mbedtls_mpi_init_mempool()")
+Reported-by: Zhenke Ma <zhenke.ma@armchina.com>
+Signed-off-by: Jerome Forissier <jerome@forissier.org>
+Reviewed-by: Etienne Carriere <etienne.carriere@linaro.org>
+Reviewed-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ lib/libmbedtls/mbedtls/library/bignum.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/libmbedtls/mbedtls/library/bignum.c b/lib/libmbedtls/mbedtls/library/bignum.c
+index e947a1ca..d5c30b17 100644
+--- a/lib/libmbedtls/mbedtls/library/bignum.c
++++ b/lib/libmbedtls/mbedtls/library/bignum.c
+@@ -204,14 +204,14 @@ int mbedtls_mpi_shrink( mbedtls_mpi *X, size_t nblimbs )
+ 
+     if( X->use_mempool )
+     {
+-        p = mempool_alloc( mbedtls_mpi_mempool, nblimbs * ciL );
++        p = mempool_alloc( mbedtls_mpi_mempool, i * ciL );
+         if( p == NULL )
+             return( MBEDTLS_ERR_MPI_ALLOC_FAILED );
+-        memset( p, 0, nblimbs * ciL );
++        memset( p, 0, i * ciL );
+     }
+     else
+     {
+-        p = (mbedtls_mpi_uint*)mbedtls_calloc( nblimbs, ciL );
++        p = (mbedtls_mpi_uint*)mbedtls_calloc( i, ciL );
+         if( p == NULL )
+             return( MBEDTLS_ERR_MPI_ALLOC_FAILED );
+     }
+-- 
+2.17.1
+

@@ -1,0 +1,35 @@
+From f67c2a988ccea1df0b2608f88c0e29088242c477 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Thu, 22 Mar 2018 11:48:21 +0100
+Subject: [PATCH 12/87] MMIOT-4-3: SDP memory mapped without cache enabled to
+ prevent MMU predictive read
+
+When RDC is used to protect SDP instead of TZASC, the CPU do not have
+read access to the memory region. Then when the MMU tries to fill the
+cache with predictive read, cache line get zeros instead of correct
+value.
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/mm/core_mmu.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/core/arch/arm/mm/core_mmu.c b/core/arch/arm/mm/core_mmu.c
+index cdb59e37..c080d4c5 100644
+--- a/core/arch/arm/mm/core_mmu.c
++++ b/core/arch/arm/mm/core_mmu.c
+@@ -457,7 +457,11 @@ struct mobj **core_sdp_mem_create_mobjs(void)
+ 	for (mem = phys_sdp_mem_begin, mobj = mobj_base;
+ 	     mem < phys_sdp_mem_end; mem++, mobj++) {
+ 		*mobj = mobj_phys_alloc(mem->addr, mem->size,
++#ifdef CFG_TEE_SDP_NONCACHE
++					TEE_MATTR_CACHE_NONCACHE,
++#else
+ 					TEE_MATTR_CACHE_CACHED,
++#endif
+ 					CORE_MEM_SDP_MEM);
+ 		if (!*mobj)
+ 			panic("can't create SDP physical memory object");
+-- 
+2.17.1
+

@@ -1,0 +1,48 @@
+From da9cca2118d272e5d09b0560284947512739a7be Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 1 Apr 2020 17:44:08 +0200
+Subject: [PATCH 36/87] core: driver: disable CAAM AES + RSA
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index b03fa653..c7a758bd 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -83,21 +83,28 @@ cryphw-one-enabled = $(call cfg-one-enabled, \
+ 
+ # Definition of the HW and Cryto Driver Algorithm supported by all i.MX
+ $(eval $(call cryphw-enable-drv-hw, HASH))
+-$(eval $(call cryphw-enable-drv-hw, CIPHER))
+ $(eval $(call cryphw-enable-drv-hw, SM))
+ $(eval $(call cryphw-enable-drv-hw, BLOB))
+ $(eval $(call cryphw-enable-drv-hw, HMAC))
++
++ifneq ($(filter y, $(CFG_MX8MQ) $(CFG_MX8MM)), y)
++$(eval $(call cryphw-enable-drv-hw, CIPHER))
+ $(eval $(call cryphw-enable-drv-hw, CMAC))
++endif
+ 
+ ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
+ 	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP)), y)
+ $(eval $(call cryphw-enable-drv-hw, ECC))
+-$(eval $(call cryphw-enable-drv-hw, RSA))
+ $(eval $(call cryphw-enable-drv-hw, MP))
+ $(eval $(call cryphw-enable-drv-hw, DH))
+ CFG_PTA_MP ?= y
+ endif
+ 
++ifneq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) \
++	$(CFG_MX6S) $(CFG_MX6SX) $(CFG_MX7ULP) $(CFG_MX8MQ) $(CFG_MX8MM)), y)
++$(eval $(call cryphw-enable-drv-hw, RSA))
++endif
++
+ $(call force, CFG_NXP_CAAM_ACIPHER_DRV, $(call cryphw-one-enabled, ECC RSA DH))
+ 
+ ifeq ($(CFG_IMX_DEK_HAB),y)
+-- 
+2.17.1
+

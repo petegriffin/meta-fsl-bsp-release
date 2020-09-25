@@ -1,0 +1,92 @@
+From 282637c354d901faf9a5c28122abb55c202b5bf0 Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Tue, 19 Jun 2018 09:11:56 +0300
+Subject: [PATCH 17/87] core: crypto: detect elliptic curve size
+
+Introduce function that detecs elliptic curve size.
+
+OP-TEE requires the same input data size as SHA1 hash for EC operations.
+If the size is not equal to SHA1 hash size, error code is returned.
+
+AOSP by default is using Bouncy Castle cryptography library for validating
+Keymaster HAL results. This library silently truncates
+input when it is bigger than the curve size. This difference produces
+issues when performing signature verification.
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+---
+ core/include/tee/tee_cryp_utl.h    |  1 +
+ core/tee/tee_cryp_utl.c            | 25 +++++++++++++++++++++++++
+ lib/libutee/include/utee_defines.h |  8 ++++++++
+ 3 files changed, 34 insertions(+)
+
+diff --git a/core/include/tee/tee_cryp_utl.h b/core/include/tee/tee_cryp_utl.h
+index 28358233..2bc10862 100644
+--- a/core/include/tee/tee_cryp_utl.h
++++ b/core/include/tee/tee_cryp_utl.h
+@@ -10,6 +10,7 @@
+ #include <crypto/crypto.h>
+ 
+ TEE_Result tee_hash_get_digest_size(uint32_t algo, size_t *size);
++TEE_Result tee_ec_get_curve_size(uint32_t algo, size_t *size);
+ TEE_Result tee_hash_createdigest(uint32_t algo, const uint8_t *data,
+ 				 size_t datalen, uint8_t *digest,
+ 				 size_t digestlen);
+diff --git a/core/tee/tee_cryp_utl.c b/core/tee/tee_cryp_utl.c
+index 1089acea..ca775ce7 100644
+--- a/core/tee/tee_cryp_utl.c
++++ b/core/tee/tee_cryp_utl.c
+@@ -52,6 +52,31 @@ TEE_Result tee_hash_get_digest_size(uint32_t algo, size_t *size)
+ 	return TEE_SUCCESS;
+ }
+ 
++TEE_Result tee_ec_get_curve_size(uint32_t algo, size_t *size)
++{
++	switch (algo) {
++	case TEE_ALG_ECDSA_P192:
++		*size = TEE_CURVE_SIZE_192;
++		break;
++	case TEE_ALG_ECDSA_P224:
++		*size = TEE_CURVE_SIZE_224;
++		break;
++	case TEE_ALG_ECDSA_P256:
++		*size = TEE_CURVE_SIZE_256;
++		break;
++	case TEE_ALG_ECDSA_P384:
++		*size = TEE_CURVE_SIZE_384;
++		break;
++	case TEE_ALG_ECDSA_P521:
++		*size = TEE_CURVE_SIZE_521;
++		break;
++	default:
++		return TEE_ERROR_NOT_SUPPORTED;
++	}
++
++	return TEE_SUCCESS;
++}
++
+ TEE_Result tee_hash_createdigest(uint32_t algo, const uint8_t *data,
+ 				 size_t datalen, uint8_t *digest,
+ 				 size_t digestlen)
+diff --git a/lib/libutee/include/utee_defines.h b/lib/libutee/include/utee_defines.h
+index 2eaa0b2f..fa435618 100644
+--- a/lib/libutee/include/utee_defines.h
++++ b/lib/libutee/include/utee_defines.h
+@@ -97,6 +97,14 @@ typedef enum {
+ } t_hash_size;
+ #endif
+ 
++typedef enum {
++	TEE_CURVE_SIZE_192 = 20,
++	TEE_CURVE_SIZE_224 = 28,
++	TEE_CURVE_SIZE_256 = 32,
++	TEE_CURVE_SIZE_384 = 48,
++	TEE_CURVE_SIZE_521 = 66,
++} t_curve_size;
++
+ #define TEE_MAC_SIZE_AES_CBC_MAC_NOPAD
+ #define TEE_MAC_SIZE_AES_CBC_MAC_PKCS5
+ #define TEE_MAC_SIZE_AES_CMAC
+-- 
+2.17.1
+

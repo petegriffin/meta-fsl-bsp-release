@@ -1,0 +1,31 @@
+From 5656fee051143d0a16de7492f3b050c790faa613 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Mon, 28 Jan 2019 19:06:24 +0100
+Subject: [PATCH 23/87] plat-imx: add support for RPMB and early TAs
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index c0d0d477..7a981fc3 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -328,6 +328,13 @@ endif
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mmevk))
+ CFG_DDR_SIZE ?= 0x80000000
+ CFG_UART_BASE ?= UART2_BASE
++
++CFG_RPMB_FS ?= y
++CFG_RPMB_TESTKEY ?= y
++CFG_RPMB_FS_DEV_ID ?= 1
++CFG_RPMB_FS_DEBUG_DATA = y
++$(call force,CFG_RPMB_WRITE_KEY,n)
++CFG_IN_TREE_EARLY_TAS += avb/023f8f1a-292a-432b-8fc4-de8471358067
+ endif
+ 
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8mnevk))
+-- 
+2.17.1
+

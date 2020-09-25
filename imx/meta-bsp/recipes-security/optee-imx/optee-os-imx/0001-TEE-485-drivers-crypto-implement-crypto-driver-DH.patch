@@ -1,0 +1,174 @@
+From 5f7aa2bac1e4616d272f34d63beedff5dc50dc99 Mon Sep 17 00:00:00 2001
+From: Cedric Neveux <cedric.neveux@nxp.com>
+Date: Tue, 14 Jan 2020 08:14:24 +0100
+Subject: [PATCH 01/87] TEE-485 drivers: crypto: implement crypto driver - DH
+
+Add a generic cryptographic DH driver interface connecting
+TEE Crypto generic APIs to HW driver interface
+
+Signed-off-by: Cedric Neveux <cedric.neveux@nxp.com>
+(cherry picked from commit 28ec49aad08425892611bcb29408b3e0772b367d)
+---
+ core/drivers/crypto/crypto_api/acipher/dh.c   | 95 +++++++++++++++++++
+ core/drivers/crypto/crypto_api/acipher/sub.mk |  1 +
+ .../crypto/crypto_api/include/drvcrypt.h      |  1 +
+ .../crypto_api/include/drvcrypt_acipher.h     | 23 +++++
+ 4 files changed, 120 insertions(+)
+ create mode 100644 core/drivers/crypto/crypto_api/acipher/dh.c
+
+diff --git a/core/drivers/crypto/crypto_api/acipher/dh.c b/core/drivers/crypto/crypto_api/acipher/dh.c
+new file mode 100644
+index 00000000..81ffd951
+--- /dev/null
++++ b/core/drivers/crypto/crypto_api/acipher/dh.c
+@@ -0,0 +1,95 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2018-2020 NXP
++ *
++ * Crypto DH interface implementation to enable HW driver.
++ */
++#include <crypto/crypto.h>
++#include <drvcrypt.h>
++#include <drvcrypt_acipher.h>
++#include <malloc.h>
++
++TEE_Result crypto_acipher_alloc_dh_keypair(struct dh_keypair *key,
++					   size_t size_bits)
++{
++	TEE_Result ret = TEE_ERROR_NOT_IMPLEMENTED;
++	struct drvcrypt_dh *dh = NULL;
++
++	if (!key || !size_bits) {
++		CRYPTO_TRACE("Parameters error (key @0x%" PRIxPTR
++			     ") (size %zu bits)",
++			     (uintptr_t)key, size_bits);
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	dh = drvcrypt_get_ops(CRYPTO_DH);
++	if (dh)
++		ret = dh->alloc_keypair(key, size_bits);
++
++	CRYPTO_TRACE("DH Keypair (%zu bits) alloc ret = 0x%" PRIx32, size_bits,
++		     ret);
++	return ret;
++}
++
++TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
++				     size_t key_size)
++{
++	TEE_Result ret = TEE_ERROR_NOT_IMPLEMENTED;
++	struct drvcrypt_dh *dh = NULL;
++
++	if (!key) {
++		CRYPTO_TRACE("Parameters error key is NULL");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	dh = drvcrypt_get_ops(CRYPTO_DH);
++	if (dh)
++		ret = dh->gen_keypair(key, q, key_size);
++
++	CRYPTO_TRACE("DH Keypair (%zu bits) generate ret = 0x%" PRIx32,
++		     key_size, ret);
++
++	return ret;
++}
++
++TEE_Result crypto_acipher_dh_shared_secret(struct dh_keypair *private_key,
++					   struct bignum *public_key,
++					   struct bignum *secret)
++{
++	TEE_Result ret = TEE_ERROR_BAD_PARAMETERS;
++	struct drvcrypt_dh *dh = NULL;
++	struct drvcrypt_secret_data sdata = {};
++	uint8_t *secret_buf = NULL;
++
++	if (!private_key || !public_key || !secret) {
++		CRYPTO_TRACE("Input parameters reference error");
++		return ret;
++	}
++
++	dh = drvcrypt_get_ops(CRYPTO_DH);
++	if (dh) {
++		/* Allocate the binary Secret buffer */
++		sdata.secret.length = crypto_bignum_num_bytes(public_key);
++		secret_buf = malloc(sdata.secret.length);
++		if (!secret_buf)
++			return TEE_ERROR_OUT_OF_MEMORY;
++
++		/* Prepare the Secret structure data */
++		sdata.key_priv = private_key;
++		sdata.key_pub = public_key;
++		sdata.secret.data = secret_buf;
++
++		ret = dh->shared_secret(&sdata);
++		if (ret == TEE_SUCCESS)
++			ret = crypto_bignum_bin2bn(secret_buf,
++						   sdata.secret.length, secret);
++
++		free(secret_buf);
++	} else {
++		ret = TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	CRYPTO_TRACE("Shared Secret returned 0x%" PRIx32, ret);
++
++	return ret;
++}
+diff --git a/core/drivers/crypto/crypto_api/acipher/sub.mk b/core/drivers/crypto/crypto_api/acipher/sub.mk
+index c2e6b6b9..683f56a5 100644
+--- a/core/drivers/crypto/crypto_api/acipher/sub.mk
++++ b/core/drivers/crypto/crypto_api/acipher/sub.mk
+@@ -1,2 +1,3 @@
+ srcs-$(CFG_CRYPTO_DRV_ECC) += ecc.c
+ srcs-$(CFG_CRYPTO_DRV_RSA) += rsa.c rsamgf.c rsassa.c
++srcs-$(CFG_CRYPTO_DRV_DH)  += dh.c
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt.h b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+index 903267e9..6787355a 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt.h
+@@ -54,6 +54,7 @@ enum drvcrypt_algo_id {
+ 	CRYPTO_CMAC,	 /* CIPHER MAC driver */
+ 	CRYPTO_ECC,	 /* Assymetric ECC driver */
+ 	CRYPTO_RSA,	 /* Asymmetric RSA driver */
++	CRYPTO_DH,	 /* Assymetric DH driver */
+ 	CRYPTO_MATH,	 /* Mathematical driver */
+ 	CRYPTO_MAX_ALGO	 /* Maximum number of algo supported */
+ };
+diff --git a/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h b/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
+index 9922d4ab..5a18aa9a 100644
+--- a/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
++++ b/core/drivers/crypto/crypto_api/include/drvcrypt_acipher.h
+@@ -159,4 +159,27 @@ static inline TEE_Result drvcrypt_register_rsa(struct drvcrypt_rsa *ops)
+ 	return drvcrypt_register(CRYPTO_RSA, (void *)ops);
+ }
+ 
++/*
++ * Crypto Library DH driver operations
++ */
++struct drvcrypt_dh {
++	/* Allocates the DH keypair */
++	TEE_Result (*alloc_keypair)(struct dh_keypair *key, size_t size_bits);
++	/* Generates the DH keypair */
++	TEE_Result (*gen_keypair)(struct dh_keypair *key, struct bignum *q,
++				  size_t size_bits);
++	/* DH Shared Secret */
++	TEE_Result (*shared_secret)(struct drvcrypt_secret_data *sdata);
++};
++
++/*
++ * Register a DH processing driver in the crypto API
++ *
++ * @ops - Driver operations in the HW layer
++ */
++static inline TEE_Result drvcrypt_register_dh(struct drvcrypt_dh *ops)
++{
++	return drvcrypt_register(CRYPTO_DH, (void *)ops);
++}
++
+ #endif /* __DRVCRYPT_ACIPHER_H__ */
+-- 
+2.17.1
+

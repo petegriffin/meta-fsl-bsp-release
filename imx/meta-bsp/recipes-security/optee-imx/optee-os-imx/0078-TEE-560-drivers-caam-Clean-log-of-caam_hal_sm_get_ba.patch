@@ -1,0 +1,32 @@
+From 71f2bd202867e37d2a66d63c4b925b3e0d533ad0 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Fri, 8 May 2020 00:16:44 +0200
+Subject: [PATCH 78/87] TEE-560 drivers: caam: Clean log of
+ caam_hal_sm_get_base_dt()
+
+With the use of FDT_OVERLAY option, the caam_hal_sm_get_base_dt()
+is called even if no FDT is available. This leads to a misleading
+error message.
+Move the log level from EMSG to DMSG.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+---
+ core/drivers/crypto/caam/hal/common/hal_sm_dt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/drivers/crypto/caam/hal/common/hal_sm_dt.c b/core/drivers/crypto/caam/hal/common/hal_sm_dt.c
+index 653a81fa..952e2402 100644
+--- a/core/drivers/crypto/caam/hal/common/hal_sm_dt.c
++++ b/core/drivers/crypto/caam/hal/common/hal_sm_dt.c
+@@ -24,7 +24,7 @@ void caam_hal_sm_get_base_dt(void *fdt, vaddr_t *sm_base)
+ 	node = fdt_node_offset_by_compatible(fdt, 0, dt_sm_match_table);
+ 
+ 	if (node < 0) {
+-		EMSG("CAAM Node not found err = 0x%X", node);
++		DMSG("CAAM Node not found err = 0x%X", node);
+ 		return;
+ 	}
+ 
+-- 
+2.17.1
+

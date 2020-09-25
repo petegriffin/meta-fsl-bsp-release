@@ -1,0 +1,44 @@
+From 6d9e44a029345bce30f7b0c396d118cf3f879dd9 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 23 Jun 2020 10:38:41 +0200
+Subject: [PATCH 50/87] Revert "[core][driver][caam] SDP mem cache tested"
+
+This reverts commit 1c70eeafe97a99749e4fa04d23d1900e1a574bce.
+---
+ core/drivers/crypto/caam/utils/utils_mem.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/utils/utils_mem.c b/core/drivers/crypto/caam/utils/utils_mem.c
+index 1c541c2b..348c6723 100644
+--- a/core/drivers/crypto/caam/utils/utils_mem.c
++++ b/core/drivers/crypto/caam/utils/utils_mem.c
+@@ -356,11 +356,22 @@ enum caam_status caam_sgtbuf_alloc(struct caamsgtbuf *data)
+ 
+ bool caam_mem_is_cached_buf(void *buf, size_t size)
+ {
++	enum teecore_memtypes mtype = MEM_AREA_MAXTYPE;
++	bool is_cached = false;
++
+ 	/*
+-	OMS: Security issue
+-	TODO: TEE-526 integration when done.
+-	*/
+-	return core_vbuf_is(CORE_MEM_CACHED, buf, size);
++	 * First check if the buffer is a known memory area mapped
++	 * with a type listed in the teecore_memtypes enum.
++	 * If not mapped, this is a User Area and so assume
++	 * it cacheable
++	 */
++	mtype = core_mmu_get_type_by_pa(virt_to_phys(buf));
++	if (mtype == MEM_AREA_MAXTYPE)
++		is_cached = true;
++	else
++		is_cached = core_vbuf_is(CORE_MEM_CACHED, buf, size);
++
++	return is_cached;
+ }
+ 
+ int caam_set_or_alloc_align_buf(void *orig, struct caambuf *dst, size_t size)
+-- 
+2.17.1
+

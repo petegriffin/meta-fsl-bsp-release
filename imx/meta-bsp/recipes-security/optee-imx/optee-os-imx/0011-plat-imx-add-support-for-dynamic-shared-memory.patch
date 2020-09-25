@@ -1,0 +1,30 @@
+From 47eff44f68999f397fbc6c1f04da6c418f07632c Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Thu, 5 Mar 2020 15:38:31 +0100
+Subject: [PATCH 11/87] plat-imx: add support for dynamic shared memory
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/platform_config.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/platform_config.h b/core/arch/arm/plat-imx/platform_config.h
+index 7032237d..14dbe5fd 100644
+--- a/core/arch/arm/plat-imx/platform_config.h
++++ b/core/arch/arm/plat-imx/platform_config.h
+@@ -74,7 +74,11 @@
+  */
+ #if defined(CFG_MX8MQ) || defined(CFG_MX8MM) || defined(CFG_MX8MN)
+ #define DRAM0_NSEC_BASE CFG_DRAM_BASE
+-#define DRAM0_NSEC_SIZE (CFG_TZDRAM_START - CFG_DRAM_BASE)
++#ifdef CFG_SECURE_DATA_PATH
++#define DRAM0_NSEC_SIZE	(CFG_TZDRAM_START - CFG_DRAM_BASE) - CFG_IMX_TZC_SDP_SIZE
++#else
++#define DRAM0_NSEC_SIZE	(CFG_TZDRAM_START - CFG_DRAM_BASE)
++#endif
+ #define DRAM1_NSEC_BASE (CFG_TZDRAM_START + 0x2000000)
+ #define DRAM1_NSEC_SIZE ((CFG_DRAM_BASE - DRAM1_NSEC_BASE) + CFG_DDR_SIZE)
+ #endif
+-- 
+2.17.1
+

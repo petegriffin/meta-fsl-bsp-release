@@ -1,0 +1,29 @@
+From 81b3ad19eae866e4f588abfd64768f4297f4b399 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Fri, 29 May 2020 09:24:03 +0200
+Subject: [PATCH 46/87] imx8mq: Add a warning if VPU do not support TZASC
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/drivers/tzc380.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/core/arch/arm/plat-imx/drivers/tzc380.c b/core/arch/arm/plat-imx/drivers/tzc380.c
+index 8e313c3e..b6f16742 100644
+--- a/core/arch/arm/plat-imx/drivers/tzc380.c
++++ b/core/arch/arm/plat-imx/drivers/tzc380.c
+@@ -72,6 +72,11 @@ void imx_configure_tzasc(void)
+ 			region = tzc_auto_configure(CFG_IMX_TZC_SDP_START,
+ 						    CFG_IMX_TZC_SDP_SIZE, TZC_ATTR_SP_S_RW,
+ 						    region);
++		} else {
++			EMSG("*************************************");
++			EMSG("* Warning: Secure Data Path TZASC   *");
++			EMSG("*   protection is not supported     *");
++			EMSG("*************************************");
+ 		}
+ #endif
+ 
+-- 
+2.17.1
+

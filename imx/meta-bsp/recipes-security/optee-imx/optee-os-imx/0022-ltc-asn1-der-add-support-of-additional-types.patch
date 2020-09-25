@@ -1,0 +1,1025 @@
+From b742ae73873d29f3350511e49625106a102e089c Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Sun, 5 Aug 2018 18:04:08 +0300
+Subject: [PATCH 22/87] ltc: asn1: der: add support of additional types
+
+1. Add support of LTC_ASN1_ENUMERATED and LTC_ASN1_LONG_INTEGER types.
+
+2. Add support of explicit tagging:
+Explicitly tagged types are derived from other types by adding an
+outer tag to the underlying type. In effect, explicitly tagged types
+are structured types consisting of one component, the underlying type.
+Explicit tagging is denoted by the ASN.1 keywords [class number]
+EXPLICIT.
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Signed-off-by: Victor Chong <victor.chong@linaro.org>
+---
+ .../lib/libtomcrypt/src/headers/tomcrypt_pk.h |  21 ++
+ .../pk/asn1/der/exp_tag/der_encode_exp_tag.c  | 251 ++++++++++++++++++
+ .../pk/asn1/der/exp_tag/der_length_exp_tag.c  | 209 +++++++++++++++
+ .../src/pk/asn1/der/exp_tag/sub.mk            |   2 +
+ .../src/pk/asn1/der/general/der_asn1_maps.c   |   8 +
+ .../long_integer/der_decode_long_integer.c    |  70 +++++
+ .../long_integer/der_encode_long_integer.c    | 117 ++++++++
+ .../long_integer/der_length_long_integer.c    |  69 +++++
+ .../src/pk/asn1/der/long_integer/sub.mk       |   6 +
+ .../der/sequence/der_encode_sequence_ex.c     |  21 ++
+ .../der/sequence/der_encode_sequence_multi.c  |   6 +
+ .../asn1/der/sequence/der_length_sequence.c   |  21 ++
+ .../short_integer/der_encode_short_integer.c  |  21 ++
+ core/lib/libtomcrypt/src/pk/asn1/der/sub.mk   |   2 +
+ 14 files changed, 824 insertions(+)
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_encode_exp_tag.c
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_length_exp_tag.c
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/sub.mk
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_decode_long_integer.c
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_encode_long_integer.c
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_length_long_integer.c
+ create mode 100644 core/lib/libtomcrypt/src/pk/asn1/der/long_integer/sub.mk
+
+diff --git a/core/lib/libtomcrypt/src/headers/tomcrypt_pk.h b/core/lib/libtomcrypt/src/headers/tomcrypt_pk.h
+index 2fb967d1..847678fd 100644
+--- a/core/lib/libtomcrypt/src/headers/tomcrypt_pk.h
++++ b/core/lib/libtomcrypt/src/headers/tomcrypt_pk.h
+@@ -501,6 +501,10 @@ typedef enum ltc_asn1_type_ {
+  LTC_ASN1_RAW_BIT_STRING,
+  LTC_ASN1_TELETEX_STRING,
+  LTC_ASN1_GENERALIZEDTIME,
++ LTC_ASN1_EXP_TAG,
++ /* 20 */
++ LTC_ASN1_ENUMERATED,
++ LTC_ASN1_LONG_INTEGER,
+  LTC_ASN1_CUSTOM_TYPE,
+ } ltc_asn1_type;
+ 
+@@ -670,6 +674,10 @@ int der_decode_short_integer(const unsigned char *in, unsigned long inlen, unsig
+ int der_encode_short_integer(unsigned long num, unsigned char *out, unsigned long *outlen);
+ int der_length_short_integer(unsigned long num, unsigned long *outlen);
+ 
++/* INTEGER -- handy for 0..2^64-1 values */
++int der_encode_long_integer(unsigned long num, unsigned char *out, unsigned long *outlen);
++int der_length_long_integer(unsigned long num, unsigned long *outlen);
++
+ /* BIT STRING */
+ int der_encode_bit_string(const unsigned char *in, unsigned long inlen,
+                                 unsigned char *out, unsigned long *outlen);
+@@ -791,6 +799,19 @@ int der_decode_generalizedtime(const unsigned char *in, unsigned long *inlen,
+ 
+ int der_length_generalizedtime(const ltc_generalizedtime *gtime, unsigned long *outlen);
+ 
++/* Explicit TAG */
++typedef struct {
++	unsigned long tag; /* tag value */
++	ltc_asn1_list *list; /* asn1 encoded type */
++} ltc_exp_tag;
++
++int der_encode_exp_tag(ltc_exp_tag *tag_st, unsigned char *out, unsigned long *outlen);
++
++int der_length_exp_tag(ltc_exp_tag *tag, unsigned long *outlen, unsigned long *payloadlen);
++
++/* Enumerated */
++int der_encode_enumerated(unsigned long num, unsigned char *out, unsigned long *outlen);
++
+ #endif
+ 
+ /* ref:         $Format:%D$ */
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_encode_exp_tag.c b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_encode_exp_tag.c
+new file mode 100644
+index 00000000..725733cc
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_encode_exp_tag.c
+@@ -0,0 +1,251 @@
++/*
++ * Copyright (C) 2017 GlobalLogic
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "tomcrypt_private.h"
++
++/**
++  @file der_encode_exp_tag.c
++  ASN.1 DER, encode a EXPLICIT TAG
++*/
++
++
++#ifdef LTC_DER
++
++/**
++  Store an EXPLICIT TAG
++  @param tag          Explicit tag structure to encode
++  @param out          The destination of the DER encoding of the explicit tag
++  @param outlen       [in/out] The length of the DER encoding
++  @return CRYPT_OK if successful
++*/
++int der_encode_exp_tag(ltc_exp_tag *tag_st, unsigned char *out, unsigned long *outlen)
++{
++   int           err;
++   ltc_asn1_type type;
++   unsigned long size, x, y, z, tag_val;
++   void          *data;
++
++   LTC_ARGCHK(tag_st    != NULL);
++   LTC_ARGCHK(out     != NULL);
++   LTC_ARGCHK(outlen  != NULL);
++
++   /* get size of output that will be required */
++   y = 0; z = 0;
++   if ((err = der_length_exp_tag(tag_st, &y, &z)) != CRYPT_OK) return CRYPT_INVALID_ARG;
++
++   /* too big ? */
++   if (*outlen < y) {
++      *outlen = y;
++      err = CRYPT_BUFFER_OVERFLOW;
++      goto LBL_ERR;
++   }
++
++   /* force to 32 bits */
++   tag_val = tag_st->tag & 0xFFFFFFFFUL;
++
++   /* store header */
++   x = 0;
++   if (tag_val <= 30) {
++	   /* calc low-tag-number form */
++	   out[x++] = 0xA0 ^ tag_val;
++   } else {
++      /* calc high-tag-number form */
++      out[x] = 0xBF;
++      y = 0; /* number of octets for tag */
++      do {
++	     tag_val >>= 7;
++	     ++y;
++      } while (tag_val);
++      tag_val = tag_st->tag;
++      x += y;
++      out[x--] = (tag_val & 0x7F); /* last octet with setting 8 bit to 0 */
++      while (x > 0) {
++         tag_val >>= 7;
++         out[x--] = 0x80 ^ (tag_val & 0x7F); /* set 8 bit to 1 and 7-bit mask */
++      }
++      x += y + 1;
++   }
++
++   if (z < 128) {
++      out[x++] = (unsigned char)z;
++   } else if (z < 256) {
++      out[x++] = 0x81;
++      out[x++] = (unsigned char)z;
++   } else if (z < 65536UL) {
++      out[x++] = 0x82;
++      out[x++] = (unsigned char)((z>>8UL)&255);
++      out[x++] = (unsigned char)(z&255);
++   } else if (z < 16777216UL) {
++      out[x++] = 0x83;
++      out[x++] = (unsigned char)((z>>16UL)&255);
++      out[x++] = (unsigned char)((z>>8UL)&255);
++      out[x++] = (unsigned char)(z&255);
++   }
++
++   /* store data */
++   *outlen -= x;
++   type = tag_st->list->type;
++   size = tag_st->list->size;
++   data = tag_st->list->data;
++
++   switch (type) {
++      case LTC_ASN1_BOOLEAN:
++         z = *outlen;
++         if ((err = der_encode_boolean(*((int *)data), out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_INTEGER:
++         z = *outlen;
++         if ((err = der_encode_integer(data, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_SHORT_INTEGER:
++         z = *outlen;
++         if ((err = der_encode_short_integer(*((unsigned long*)data), out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_LONG_INTEGER:
++         z = *outlen;
++         if ((err = der_encode_long_integer(*((unsigned long*)data), out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_BIT_STRING:
++         z = *outlen;
++         if ((err = der_encode_bit_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_RAW_BIT_STRING:
++         z = *outlen;
++         if ((err = der_encode_raw_bit_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_OCTET_STRING:
++         z = *outlen;
++         if ((err = der_encode_octet_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_NULL:
++         out[x] = 0x05;
++         out[x+1] = 0x00;
++         z = 2;
++         break;
++
++      case LTC_ASN1_OBJECT_IDENTIFIER:
++         z = *outlen;
++         if ((err = der_encode_object_identifier(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_IA5_STRING:
++         z = *outlen;
++         if ((err = der_encode_ia5_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_PRINTABLE_STRING:
++         z = *outlen;
++         if ((err = der_encode_printable_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_UTF8_STRING:
++         z = *outlen;
++         if ((err = der_encode_utf8_string(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_UTCTIME:
++         z = *outlen;
++         if ((err = der_encode_utctime(data, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_GENERALIZEDTIME:
++         z = *outlen;
++         if ((err = der_encode_generalizedtime(data, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_SET:
++         z = *outlen;
++         if ((err = der_encode_set(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_SETOF:
++         z = *outlen;
++         if ((err = der_encode_setof(data, size, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_SEQUENCE:
++         z = *outlen;
++         if ((err = der_encode_sequence_ex(data, size, out + x, &z, type)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_EXP_TAG:
++         z = *outlen;
++         if ((err = der_encode_exp_tag(data, out + x, &z)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         break;
++
++      case LTC_ASN1_CHOICE:
++      case LTC_ASN1_EOL:
++      case LTC_ASN1_TELETEX_STRING:
++      default:
++         err = CRYPT_INVALID_ARG;
++         goto LBL_ERR;
++   }
++
++   x       += z;
++   *outlen -= z;
++   *outlen = x;
++   err = CRYPT_OK;
++
++LBL_ERR:
++   return err;
++}
++
++#endif
++
++/* ref:         $Format:%D$ */
++/* git commit:  $Format:%H$ */
++/* commit time: $Format:%ai$ */
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_length_exp_tag.c b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_length_exp_tag.c
+new file mode 100644
+index 00000000..e7fe16b3
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/der_length_exp_tag.c
+@@ -0,0 +1,209 @@
++/*
++ * Copyright (C) 2017 GlobalLogic
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "tomcrypt_private.h"
++
++/**
++  @file der_length_exp_tag.c
++  ASN.1 DER, get length of explicit tag
++*/
++
++#ifdef LTC_DER
++
++/**
++   Get the length of a DER explicit tag
++   @param tag    The structure, which contain tag value and type for tagging.
++   @param outlen [out] The length required in octets to store it
++   @return CRYPT_OK on success
++*/
++int der_length_exp_tag(ltc_exp_tag *tag, unsigned long *outlen, unsigned long *payloadlen)
++{
++   int           err;
++   ltc_asn1_type type;
++   unsigned long size, x, y, z, tag_val;
++   void          *data;
++
++   LTC_ARGCHK(tag    != NULL);
++   LTC_ARGCHK(outlen  != NULL);
++
++   /* get size of output that will be required */
++   y = 0;
++
++   /* force to 32 bits */
++   tag_val = tag->tag & 0xFFFFFFFFUL;
++   type = tag->list->type;
++   size = tag->list->size;
++   data = tag->list->data;
++
++   switch (type) {
++      case LTC_ASN1_BOOLEAN:
++         if ((err = der_length_boolean(&x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_INTEGER:
++         if ((err = der_length_integer(data, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_SHORT_INTEGER:
++         if ((err = der_length_short_integer(*((unsigned long *)data), &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_LONG_INTEGER:
++         if ((err = der_length_long_integer(*((unsigned long *)data), &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_BIT_STRING:
++      case LTC_ASN1_RAW_BIT_STRING:
++         if ((err = der_length_bit_string(size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_OCTET_STRING:
++         if ((err = der_length_octet_string(size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_NULL:
++         y += 2;
++         break;
++
++      case LTC_ASN1_OBJECT_IDENTIFIER:
++         if ((err = der_length_object_identifier(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_IA5_STRING:
++         if ((err = der_length_ia5_string(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_TELETEX_STRING:
++         if ((err = der_length_teletex_string(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_PRINTABLE_STRING:
++         if ((err = der_length_printable_string(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_UTCTIME:
++         if ((err = der_length_utctime(data, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_GENERALIZEDTIME:
++         if ((err = der_length_generalizedtime(data, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_UTF8_STRING:
++         if ((err = der_length_utf8_string(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_SET:
++      case LTC_ASN1_SETOF:
++      case LTC_ASN1_SEQUENCE:
++         if ((err = der_length_sequence(data, size, &x)) != CRYPT_OK) {
++            goto LBL_ERR;
++         }
++         y += x;
++         break;
++
++      case LTC_ASN1_EXP_TAG:
++          if ((err = der_length_exp_tag(data, &x, NULL)) != CRYPT_OK) {
++             goto LBL_ERR;
++          }
++          y += x;
++          break;
++
++      case LTC_ASN1_CHOICE:
++      case LTC_ASN1_EOL:
++      default:
++         err = CRYPT_INVALID_ARG;
++         goto LBL_ERR;
++   }
++
++   /* calc header size */
++   z = y;
++   if (y < 128) {
++      y += 2;
++   } else if (y < 256) {
++      /* 0x30 0x81 LL */
++      y += 3;
++   } else if (y < 65536UL) {
++      /* 0x30 0x82 LL LL */
++      y += 4;
++   } else if (y < 16777216UL) {
++      /* 0x30 0x83 LL LL LL */
++      y += 5;
++   } else {
++      err = CRYPT_INVALID_ARG;
++      goto LBL_ERR;
++   }
++
++   /* calc high-tag-number form */
++   if (tag_val > 30) {
++      do {
++         tag_val >>= 7;
++         y++;
++	   } while (tag_val);
++   }
++
++   /* store size */
++   if (payloadlen) *payloadlen = z;
++   *outlen = y;
++   err     = CRYPT_OK;
++
++LBL_ERR:
++   return err;
++}
++
++#endif
++
++/* ref:         $Format:%D$ */
++/* git commit:  $Format:%H$ */
++/* commit time: $Format:%ai$ */
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/sub.mk b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/sub.mk
+new file mode 100644
+index 00000000..582c4017
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/exp_tag/sub.mk
+@@ -0,0 +1,2 @@
++srcs-y += der_encode_exp_tag.c
++srcs-y += der_length_exp_tag.c
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/general/der_asn1_maps.c b/core/lib/libtomcrypt/src/pk/asn1/der/general/der_asn1_maps.c
+index 03f067f4..63ba2e28 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/general/der_asn1_maps.c
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/general/der_asn1_maps.c
+@@ -44,6 +44,14 @@ const int der_asn1_type_to_identifier_map[] =
+   3, /* LTC_ASN1_RAW_BIT_STRING, */
+  20, /* LTC_ASN1_TELETEX_STRING, */
+  24, /* LTC_ASN1_GENERALIZEDTIME, */
++ -1, /* LTC_ASN1_EXP_TAG, */
++     /* 20 */
++ -1, /* LTC_ASN1_ENUMERATED, */
++ /* LTC_ASN1_LONG_INTEGER not in Igor's original patch */
++ /* not sure why */
++ /* if not in patch then default to -1 in switch-case-default */
++ /* code of original patch so we add it here */
++ -1, /* LTC_ASN1_LONG_INTEGER, */
+  -1, /* LTC_ASN1_CUSTOM_TYPE, */
+ };
+ const unsigned long der_asn1_type_to_identifier_map_sz = sizeof(der_asn1_type_to_identifier_map)/sizeof(der_asn1_type_to_identifier_map[0]);
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_decode_long_integer.c b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_decode_long_integer.c
+new file mode 100644
+index 00000000..ea4ad7b4
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_decode_long_integer.c
+@@ -0,0 +1,70 @@
++/*
++ * Copyright (C) 2018 GlobalLogic
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "tomcrypt_private.h"
++
++/**
++  @file der_decode_long_integer.c
++  ASN.1 DER, decode an integer, Tom St Denis
++*/
++
++
++#ifdef LTC_DER
++
++/**
++  Read a long integer
++  @param in       The DER encoded data
++  @param inlen    Size of data
++  @param num      [out] The integer to decode
++  @return CRYPT_OK if successful
++*/
++int der_decode_long_integer(const unsigned char *in, unsigned long inlen, unsigned long *num)
++{
++   unsigned long len, x, y;
++
++   LTC_ARGCHK(num    != NULL);
++   LTC_ARGCHK(in     != NULL);
++
++   /* check length */
++   if (inlen < 2) {
++      return CRYPT_INVALID_PACKET;
++   }
++
++   /* check header */
++   x = 0;
++   if ((in[x++] & 0x1F) != 0x02) {
++      return CRYPT_INVALID_PACKET;
++   }
++
++   /* get the packet len */
++   len = in[x++];
++
++   if (x + len > inlen) {
++      return CRYPT_INVALID_PACKET;
++   }
++
++   /* read number */
++   y = 0;
++   while (len--) {
++      y = (y<<8) | (unsigned long)in[x++];
++   }
++   *num = y;
++
++   return CRYPT_OK;
++
++}
++
++#endif
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_encode_long_integer.c b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_encode_long_integer.c
+new file mode 100644
+index 00000000..1ce74b51
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_encode_long_integer.c
+@@ -0,0 +1,117 @@
++/*
++ * Copyright (c) 2001-2007, Tom St Denis
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright notice,
++ * this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright notice,
++ * this list of conditions and the following disclaimer in the documentation
++ * and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/* LibTomCrypt, modular cryptographic library -- Tom St Denis
++ *
++ * LibTomCrypt is a library that provides various cryptographic
++ * algorithms in a highly modular and flexible manner.
++ *
++ * The library is free for all purposes without any express
++ * guarantee it works.
++ *
++ * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
++ */
++#include "tomcrypt_private.h"
++
++/**
++  @file der_encode_long_integer.c
++  ASN.1 DER, encode an integer, Tom St Denis
++*/
++
++
++#ifdef LTC_DER
++
++/**
++  Store a long integer in the range (0,2^64-1)
++  @param num      The integer to encode
++  @param out      [out] The destination for the DER encoded integers
++  @param outlen   [in/out] The max size and resulting size of the DER encoded integers
++  @return CRYPT_OK if successful
++*/
++int der_encode_long_integer(unsigned long num, unsigned char *out, unsigned long *outlen)
++{
++   unsigned long len, x, y, z;
++   int           err;
++
++   LTC_ARGCHK(out    != NULL);
++   LTC_ARGCHK(outlen != NULL);
++
++   /* find out how big this will be */
++   if ((err = der_length_long_integer(num, &len)) != CRYPT_OK) {
++      return err;
++   }
++
++   if (*outlen < len) {
++      *outlen = len;
++      return CRYPT_BUFFER_OVERFLOW;
++   }
++
++   /* get len of output */
++   z = 0;
++   y = num;
++   while (y) {
++     ++z;
++     y >>= 8;
++   }
++
++   /* handle zero */
++   if (z == 0) {
++      z = 1;
++   }
++
++   /* see if msb is set */
++   z += (num&(1UL<<((z<<3) - 1))) ? 1 : 0;
++
++   /* adjust the number so the msB is non-zero */
++   for (x = 0; (z <= 8) && (x < (8 - z)); x++) {
++      num <<= 8;
++   }
++
++   /* store header */
++   x = 0;
++   out[x++] = 0x02;
++   out[x++] = (unsigned char)z;
++
++   /* if 31st bit is set output a leading zero and decrement count */
++   if (z == 9) {
++      out[x++] = 0;
++      --z;
++   }
++
++   /* store values */
++   for (y = 0; y < z; y++) {
++      out[x++] = (unsigned char)((num >> 56) & 0xFF);
++      num    <<= 8;
++   }
++
++   /* we good */
++   *outlen = x;
++
++   return CRYPT_OK;
++}
++
++#endif
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_length_long_integer.c b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_length_long_integer.c
+new file mode 100644
+index 00000000..40803d31
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/der_length_long_integer.c
+@@ -0,0 +1,69 @@
++/*
++ * Copyright (C) 2017 GlobalLogic
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "tomcrypt_private.h"
++
++/**
++  @file der_length_long_integer.c
++  ASN.1 DER, get length of encoding, Tom St Denis
++*/
++
++
++#ifdef LTC_DER
++/**
++  Gets length of DER encoding of long integer num
++  @param num    The long integer to get the size of
++  @param outlen [out] The length of the DER encoding for the given long integer
++  @return CRYPT_OK if successful
++*/
++int der_length_long_integer(unsigned long num, unsigned long *outlen)
++{
++   unsigned long z, y, len;
++
++   LTC_ARGCHK(outlen  != NULL);
++
++   /* get the number of bytes */
++   z = 0;
++   y = num;
++   while (y) {
++     ++z;
++     y >>= 8;
++   }
++
++   /* handle zero */
++   if (z == 0) {
++      z = 1;
++   }
++
++   /* we need a 0x02 to indicate it's INTEGER */
++   len = 1;
++
++   /* length byte */
++   ++len;
++
++   /* bytes in value */
++   len += z;
++
++   /* see if msb is set */
++   len += (num&(1UL<<((z<<3) - 1))) ? 1 : 0;
++
++   /* return length */
++   *outlen = len;
++
++   return CRYPT_OK;
++}
++
++#endif
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/sub.mk b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/sub.mk
+new file mode 100644
+index 00000000..e1314eb1
+--- /dev/null
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/long_integer/sub.mk
+@@ -0,0 +1,6 @@
++# der_decode_long_integer.c NOT in Igor's original patch!
++# not sure why
++# probably because the function in it isn't used anywhere
++srcs-y += der_decode_long_integer.c
++srcs-y += der_encode_long_integer.c
++srcs-y += der_length_long_integer.c
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_ex.c b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_ex.c
+index a8dc315b..d520298a 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_ex.c
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_ex.c
+@@ -92,6 +92,13 @@ int der_encode_sequence_ex(const ltc_asn1_list *list, unsigned long inlen,
+                }
+                break;
+ 
++           case LTC_ASN1_LONG_INTEGER:
++               z = *outlen;
++               if ((err = der_encode_long_integer(*((unsigned long*)data), out + x, &z)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               break;
++
+            case LTC_ASN1_BIT_STRING:
+                z = *outlen;
+                if ((err = der_encode_bit_string(data, size, out + x, &z)) != CRYPT_OK) {
+@@ -189,6 +196,20 @@ int der_encode_sequence_ex(const ltc_asn1_list *list, unsigned long inlen,
+                }
+                break;
+ 
++           case LTC_ASN1_EXP_TAG:
++               z = *outlen;
++               if ((err = der_encode_exp_tag(data, out + x, &z)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               break;
++
++           case LTC_ASN1_ENUMERATED:
++               z = *outlen;
++               if ((err = der_encode_enumerated(*((unsigned long*)data), out + x, &z)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               break;
++
+            case LTC_ASN1_CHOICE:
+            case LTC_ASN1_EOL:
+            case LTC_ASN1_TELETEX_STRING:
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_multi.c b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_multi.c
+index 46ad3d6a..eda01949 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_multi.c
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_encode_sequence_multi.c
+@@ -68,6 +68,9 @@ int der_encode_sequence_multi(unsigned char *out, unsigned long *outlen, ...)
+            case LTC_ASN1_SETOF:
+            case LTC_ASN1_RAW_BIT_STRING:
+            case LTC_ASN1_GENERALIZEDTIME:
++           case LTC_ASN1_EXP_TAG:
++           case LTC_ASN1_ENUMERATED:
++           case LTC_ASN1_LONG_INTEGER:
+                 ++x;
+                 break;
+ 
+@@ -121,6 +124,9 @@ int der_encode_sequence_multi(unsigned char *out, unsigned long *outlen, ...)
+            case LTC_ASN1_SETOF:
+            case LTC_ASN1_RAW_BIT_STRING:
+            case LTC_ASN1_GENERALIZEDTIME:
++           case LTC_ASN1_EXP_TAG:
++           case LTC_ASN1_ENUMERATED:
++           case LTC_ASN1_LONG_INTEGER:
+                 LTC_SET_ASN1(list, x++, type, data, size);
+                 break;
+ 
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_length_sequence.c b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_length_sequence.c
+index 0b9999f0..10e9ab88 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_length_sequence.c
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/sequence/der_length_sequence.c
+@@ -76,6 +76,13 @@ int der_length_sequence_ex(const ltc_asn1_list *list, unsigned long inlen,
+                y += x;
+                break;
+ 
++           case LTC_ASN1_LONG_INTEGER:
++               if ((err = der_length_long_integer(*((unsigned long *)data), &x)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               y += x;
++               break;
++
+            case LTC_ASN1_BIT_STRING:
+            case LTC_ASN1_RAW_BIT_STRING:
+                if ((err = der_length_bit_string(size, &x)) != CRYPT_OK) {
+@@ -160,6 +167,20 @@ int der_length_sequence_ex(const ltc_asn1_list *list, unsigned long inlen,
+                y += x;
+                break;
+ 
++           case LTC_ASN1_EXP_TAG:
++               if ((err = der_length_exp_tag(data, &x, NULL)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               y += x;
++               break;
++
++           case LTC_ASN1_ENUMERATED:
++               if ((err = der_length_short_integer(*((unsigned long *)data), &x)) != CRYPT_OK) {
++                  goto LBL_ERR;
++               }
++               y += x;
++               break;
++
+            case LTC_ASN1_CHOICE:
+            case LTC_ASN1_EOL:
+            default:
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/short_integer/der_encode_short_integer.c b/core/lib/libtomcrypt/src/pk/asn1/der/short_integer/der_encode_short_integer.c
+index e33ccbbc..0354aee9 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/short_integer/der_encode_short_integer.c
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/short_integer/der_encode_short_integer.c
+@@ -17,6 +17,27 @@
+ 
+ #ifdef LTC_DER
+ 
++/**
++  Store an enumerated in the range (0,2^32-1)
++  @param num      The enumerated to encode
++  @param out      [out] The destination for the DER encoded enumerated
++  @param outlen   [in/out] The max size and resulting size of the DER encoded enumerated
++  @return CRYPT_OK if successful
++*/
++int der_encode_enumerated(unsigned long num, unsigned char *out, unsigned long *outlen)
++{
++	int err;
++
++	err = der_encode_short_integer(num, out, outlen);
++
++	if (err == CRYPT_OK) {
++		/* change header for enumerated*/
++		out[0] = 0x0A;
++	}
++
++	return err;
++}
++
+ /**
+   Store a short integer in the range (0,2^32-1)
+   @param num      The integer to encode
+diff --git a/core/lib/libtomcrypt/src/pk/asn1/der/sub.mk b/core/lib/libtomcrypt/src/pk/asn1/der/sub.mk
+index 2951f19c..a40f9236 100644
+--- a/core/lib/libtomcrypt/src/pk/asn1/der/sub.mk
++++ b/core/lib/libtomcrypt/src/pk/asn1/der/sub.mk
+@@ -2,10 +2,12 @@ subdirs-y += bit
+ subdirs-y += boolean
+ subdirs-y += choice
+ subdirs-y += custom_type
++subdirs-y += exp_tag
+ subdirs-y += general
+ subdirs-y += generalizedtime
+ subdirs-y += ia5
+ subdirs-y += integer
++subdirs-y += long_integer
+ subdirs-y += object_identifier
+ subdirs-y += octet
+ subdirs-y += printable_string
+-- 
+2.17.1
+

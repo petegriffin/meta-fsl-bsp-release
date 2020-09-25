@@ -1,0 +1,27 @@
+From 13ffe4b9deedbec5bf760daeedefdd63a54963af Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Tue, 9 Jun 2020 08:52:37 +0200
+Subject: [PATCH 48/87] MMIOT-499: Increase amount of MEM_AREA_RES_VASPACE
+ memory OPTEE can map
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ core/arch/arm/arm.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/arm.mk b/core/arch/arm/arm.mk
+index 5defb327..4b1a23a4 100644
+--- a/core/arch/arm/arm.mk
++++ b/core/arch/arm/arm.mk
+@@ -5,7 +5,7 @@ CFG_CORE_TZSRAM_EMUL_SIZE ?= 458752
+ CFG_LPAE_ADDR_SPACE_SIZE ?= (1ull << 32)
+ 
+ CFG_MMAP_REGIONS ?= 13
+-CFG_RESERVED_VASPACE_SIZE ?= (1024 * 1024 * 10)
++CFG_RESERVED_VASPACE_SIZE ?= (1024 * 1024 * 20)
+ 
+ ifeq ($(CFG_ARM64_core),y)
+ CFG_KERN_LINKER_FORMAT ?= elf64-littleaarch64
+-- 
+2.17.1
+

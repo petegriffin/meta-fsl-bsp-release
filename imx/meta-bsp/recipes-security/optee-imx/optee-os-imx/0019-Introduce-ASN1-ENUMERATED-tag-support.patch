@@ -1,0 +1,90 @@
+From 2a3eec3d35b593891377d2479525a17fd94528db Mon Sep 17 00:00:00 2001
+From: Mykhailo Sopiha <mykhailo.sopiha@linaro.org>
+Date: Thu, 24 Oct 2019 16:36:41 +0300
+Subject: [PATCH 19/87] Introduce ASN1 ENUMERATED tag support
+
+Signed-off-by: Mykhailo Sopiha <mykhailo.sopiha@linaro.org>
+---
+ lib/libmbedtls/mbedtls/include/mbedtls/asn1.h |  1 +
+ .../mbedtls/include/mbedtls/asn1write.h       | 15 +++++++++++
+ lib/libmbedtls/mbedtls/library/asn1write.c    | 26 +++++++++++++++++++
+ 3 files changed, 42 insertions(+)
+
+diff --git a/lib/libmbedtls/mbedtls/include/mbedtls/asn1.h b/lib/libmbedtls/mbedtls/include/mbedtls/asn1.h
+index b1ff1fe9..551477b3 100644
+--- a/lib/libmbedtls/mbedtls/include/mbedtls/asn1.h
++++ b/lib/libmbedtls/mbedtls/include/mbedtls/asn1.h
+@@ -75,6 +75,7 @@
+ #define MBEDTLS_ASN1_OCTET_STRING            0x04
+ #define MBEDTLS_ASN1_NULL                    0x05
+ #define MBEDTLS_ASN1_OID                     0x06
++#define MBEDTLS_ASN1_ENUMERATED              0x0A
+ #define MBEDTLS_ASN1_UTF8_STRING             0x0C
+ #define MBEDTLS_ASN1_SEQUENCE                0x10
+ #define MBEDTLS_ASN1_SET                     0x11
+diff --git a/lib/libmbedtls/mbedtls/include/mbedtls/asn1write.h b/lib/libmbedtls/mbedtls/include/mbedtls/asn1write.h
+index 28522d10..1753c319 100644
+--- a/lib/libmbedtls/mbedtls/include/mbedtls/asn1write.h
++++ b/lib/libmbedtls/mbedtls/include/mbedtls/asn1write.h
+@@ -183,6 +183,21 @@ int mbedtls_asn1_write_bool( unsigned char **p, unsigned char *start,
+  */
+ int mbedtls_asn1_write_int( unsigned char **p, unsigned char *start, int val );
+ 
++/**
++ * \brief           Write an enum tag (#MBEDTLS_ASN1_ENUMERATED) and value
++ *                  in ASN.1 format.
++ *
++ * \note            This function works backwards in data buffer.
++ *
++ * \param p         The reference to the current position pointer.
++ * \param start     The start of the buffer, for bounds-checking.
++ * \param val       The integer value to write.
++ *
++ * \return          The number of bytes written to \p p on success.
++ * \return          A negative \c MBEDTLS_ERR_ASN1_XXX error code on failure.
++ */
++int mbedtls_asn1_write_enum( unsigned char **p, unsigned char *start, int val );
++
+ /**
+  * \brief           Write a string in ASN.1 format using a specific
+  *                  string encoding tag.
+diff --git a/lib/libmbedtls/mbedtls/library/asn1write.c b/lib/libmbedtls/mbedtls/library/asn1write.c
+index 871477b1..7544e8d9 100644
+--- a/lib/libmbedtls/mbedtls/library/asn1write.c
++++ b/lib/libmbedtls/mbedtls/library/asn1write.c
+@@ -257,6 +257,32 @@ int mbedtls_asn1_write_int( unsigned char **p, unsigned char *start, int val )
+     return( (int) len );
+ }
+ 
++int mbedtls_asn1_write_enum( unsigned char **p, unsigned char *start, int val )
++{
++    int ret;
++    size_t len = 0;
++
++    if( *p - start < 1 )
++	return( MBEDTLS_ERR_ASN1_BUF_TOO_SMALL );
++
++    len += 1;
++    *--(*p) = val;
++
++    if( val > 0 && **p & 0x80 )
++    {
++	if( *p - start < 1 )
++	    return( MBEDTLS_ERR_ASN1_BUF_TOO_SMALL );
++
++	*--(*p) = 0x00;
++	len += 1;
++    }
++
++    MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_len( p, start, len ) );
++    MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_tag( p, start, MBEDTLS_ASN1_ENUMERATED ) );
++
++    return( (int) len );
++}
++
+ int mbedtls_asn1_write_tagged_string( unsigned char **p, unsigned char *start, int tag,
+     const char *text, size_t text_len )
+ {
+-- 
+2.17.1
+

@@ -1,0 +1,121 @@
+From 402341b0188b9ac1b03ae6495507e4549a8d554a Mon Sep 17 00:00:00 2001
+From: Jerome Forissier <jerome@forissier.org>
+Date: Thu, 16 Apr 2020 14:14:15 +0200
+Subject: [PATCH 44/87] core: crypto: ECC: make sure key_size is consistent
+ with attributes
+
+TEE_GenerateKey() takes a key_size argument and various attributes. If
+the size derived from the attributes is not key_size, we should return
+TEE_ERROR_BAD_PARAMETERS as per the GP TEE Internal Core API
+specification v1.2.1: "If an incorrect or inconsistent attribute is
+detected. The checks that are performed depend on the implementation.".
+
+Signed-off-by: Jerome Forissier <jerome@forissier.org>
+Acked-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ core/crypto/crypto.c         | 3 ++-
+ core/include/crypto/crypto.h | 2 +-
+ core/lib/libtomcrypt/ecc.c   | 5 ++++-
+ core/tee/tee_svc_cryp.c      | 5 ++---
+ lib/libmbedtls/core/ecc.c    | 5 ++++-
+ 5 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/core/crypto/crypto.c b/core/crypto/crypto.c
+index eb795f26..d3324a76 100644
+--- a/core/crypto/crypto.c
++++ b/core/crypto/crypto.c
+@@ -669,7 +669,8 @@ void crypto_acipher_free_ecc_public_key(struct ecc_public_key *s __unused)
+ {
+ }
+ 
+-TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key __unused)
++TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key __unused,
++				      size_t key_size __unused)
+ {
+ 	return TEE_ERROR_NOT_IMPLEMENTED;
+ }
+diff --git a/core/include/crypto/crypto.h b/core/include/crypto/crypto.h
+index 6cd1ae29..6c2e68f1 100644
+--- a/core/include/crypto/crypto.h
++++ b/core/include/crypto/crypto.h
+@@ -203,7 +203,7 @@ TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key, size_t key_size);
+ TEE_Result crypto_acipher_gen_dsa_key(struct dsa_keypair *key, size_t key_size);
+ TEE_Result crypto_acipher_gen_dh_key(struct dh_keypair *key, struct bignum *q,
+ 				     size_t xbits, size_t key_size);
+-TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key);
++TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key, size_t key_size);
+ 
+ TEE_Result crypto_acipher_dh_shared_secret(struct dh_keypair *private_key,
+ 					   struct bignum *public_key,
+diff --git a/core/lib/libtomcrypt/ecc.c b/core/lib/libtomcrypt/ecc.c
+index 31b9ccbb..b862f068 100644
+--- a/core/lib/libtomcrypt/ecc.c
++++ b/core/lib/libtomcrypt/ecc.c
+@@ -145,7 +145,7 @@ static TEE_Result ecc_get_curve_info(uint32_t curve, uint32_t algo,
+ 	return TEE_SUCCESS;
+ }
+ 
+-TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
++TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key, size_t key_size)
+ {
+ 	TEE_Result res;
+ 	ecc_key ltc_tmp_key;
+@@ -158,6 +158,9 @@ TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
+ 	if (res != TEE_SUCCESS)
+ 		return res;
+ 
++	if (key_size != key_size_bits)
++		return TEE_ERROR_BAD_PARAMETERS;
++
+ 	/* Generate the ECC key */
+ 	ltc_res = ecc_make_key(NULL, find_prng("prng_crypto"),
+ 			       key_size_bytes, &ltc_tmp_key);
+diff --git a/core/tee/tee_svc_cryp.c b/core/tee/tee_svc_cryp.c
+index 4b4b8f88..a3ca25ab 100644
+--- a/core/tee/tee_svc_cryp.c
++++ b/core/tee/tee_svc_cryp.c
+@@ -1728,8 +1728,7 @@ static TEE_Result tee_svc_obj_generate_key_dh(
+ 
+ static TEE_Result tee_svc_obj_generate_key_ecc(
+ 	struct tee_obj *o, const struct tee_cryp_obj_type_props *type_props,
+-	uint32_t key_size __unused,
+-	const TEE_Attribute *params, uint32_t param_count)
++	uint32_t key_size, const TEE_Attribute *params, uint32_t param_count)
+ {
+ 	TEE_Result res;
+ 	struct ecc_keypair *tee_ecc_key;
+@@ -1742,7 +1741,7 @@ static TEE_Result tee_svc_obj_generate_key_ecc(
+ 
+ 	tee_ecc_key = (struct ecc_keypair *)o->attr;
+ 
+-	res = crypto_acipher_gen_ecc_key(tee_ecc_key);
++	res = crypto_acipher_gen_ecc_key(tee_ecc_key, key_size);
+ 	if (res != TEE_SUCCESS)
+ 		return res;
+ 
+diff --git a/lib/libmbedtls/core/ecc.c b/lib/libmbedtls/core/ecc.c
+index 3c042586..1d1281b6 100644
+--- a/lib/libmbedtls/core/ecc.c
++++ b/lib/libmbedtls/core/ecc.c
+@@ -150,7 +150,7 @@ static void ecc_clear_precomputed(mbedtls_ecp_group *grp)
+ 	grp->T_size = 0;
+ }
+ 
+-TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
++TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key, size_t key_size)
+ {
+ 	TEE_Result res = TEE_SUCCESS;
+ 	int lmd_res = 0;
+@@ -164,6 +164,9 @@ TEE_Result crypto_acipher_gen_ecc_key(struct ecc_keypair *key)
+ 	if (res != TEE_SUCCESS)
+ 		return res;
+ 
++	if (key_size != key_size_bits)
++		return TEE_ERROR_BAD_PARAMETERS;
++
+ 	mbedtls_ecdsa_init(&ecdsa);
+ 
+ 	/* Generate the ECC key */
+-- 
+2.17.1
+

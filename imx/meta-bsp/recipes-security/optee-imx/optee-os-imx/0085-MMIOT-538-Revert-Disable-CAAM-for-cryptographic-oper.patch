@@ -1,0 +1,31 @@
+From 141f99c4019f52c7f721e666b37b8ee9cbb35bfc Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 3 Aug 2020 09:58:53 +0200
+Subject: [PATCH 85/87] MMIOT-538: Revert "Disable CAAM for cryptographic
+ operations"
+
+This reverts commit d0638608e493a48486c7e7194dfe6fa2cc056dc3.
+---
+ core/arch/arm/plat-imx/crypto_conf.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index ecea390d..ecebcc4a 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -114,11 +114,11 @@ cryphw-one-enabled = $(call cfg-one-enabled, \
+ 
+ 
+ # Definition of the HW and Cryto Driver Algorithm supported by all i.MX
++$(eval $(call cryphw-enable-drv-hw, CIPHER))
+ $(eval $(call cryphw-enable-drv-hw, SM))
+ $(eval $(call cryphw-enable-drv-hw, BLOB))
+ 
+ ifneq ($(filter y, $(CFG_MX8MQ) $(CFG_MX8MM)), y)
+-$(eval $(call cryphw-enable-drv-hw, CIPHER))
+ $(eval $(call cryphw-enable-drv-hw, HASH))
+ $(eval $(call cryphw-enable-drv-hw, HMAC))
+ $(eval $(call cryphw-enable-drv-hw, CMAC))
+-- 
+2.17.1
+

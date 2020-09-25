@@ -1,0 +1,38 @@
+From 8d9554c7e70c294e2cb985bd319cab3fbed5fea3 Mon Sep 17 00:00:00 2001
+From: Cedric Neveux <cedric.neveux@nxp.com>
+Date: Tue, 23 Jun 2020 09:10:47 +0200
+Subject: [PATCH 79/87] TEE-418 drivers: caam: fix cipher streaming
+
+Fix the Cipher streaming source/destination size used to
+generate the last data block (not full block) returned
+to the caller.
+
+Signed-off-by: Cedric Neveux <cedric.neveux@nxp.com>
+---
+ core/drivers/crypto/caam/cipher/caam_cipher.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/core/drivers/crypto/caam/cipher/caam_cipher.c b/core/drivers/crypto/caam/cipher/caam_cipher.c
+index a034101a..82282847 100644
+--- a/core/drivers/crypto/caam/cipher/caam_cipher.c
++++ b/core/drivers/crypto/caam/cipher/caam_cipher.c
+@@ -689,14 +689,13 @@ static TEE_Result do_update_streaming(struct drvcrypt_cipher_update *dupdate)
+ 
+ 		ret = caam_dmaobj_init_input(&insrc,
+ 					     dupdate->src.data + size_indone,
+-					     dupdate->src.length - size_indone);
++					     size_topost);
+ 		if (ret)
+ 			goto end_streaming;
+ 
+ 		ret = caam_dmaobj_init_output(&indst,
+ 					      dupdate->dst.data + size_indone,
+-					      ctx->blockbuf.filled,
+-					      ctx->blockbuf.filled);
++					      size_topost, size_topost);
+ 		if (ret)
+ 			goto end_streaming;
+ 
+-- 
+2.17.1
+

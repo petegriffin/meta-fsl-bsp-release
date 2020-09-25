@@ -1,0 +1,52 @@
+From 27c0795685833a1e150edbcaa7cc711f0fa28228 Mon Sep 17 00:00:00 2001
+From: Cedric Neveux <cedric.neveux@nxp.com>
+Date: Tue, 16 Jun 2020 16:35:05 +0200
+Subject: [PATCH 51/87] TEE-526 core: arm: retrieve SDP Memory cacheability
+
+Add function tee_entry_is_sdp_cacched to retrieve the SDP Memory
+cacheability
+
+Signed-off-by: Cedric Neveux <cedric.neveux@nxp.com>
+---
+ core/arch/arm/include/tee/entry_std.h |  3 +++
+ core/arch/arm/tee/entry_std.c         | 12 ++++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/core/arch/arm/include/tee/entry_std.h b/core/arch/arm/include/tee/entry_std.h
+index d91f0375..28f25ea5 100644
+--- a/core/arch/arm/include/tee/entry_std.h
++++ b/core/arch/arm/include/tee/entry_std.h
+@@ -22,4 +22,7 @@ uint32_t __tee_entry_std(struct optee_msg_arg *arg, uint32_t num_params);
+ /* Get list head for sessions opened from non-secure */
+ void nsec_sessions_list_head(struct tee_ta_session_head **open_sessions);
+ 
++/* Retrieve SDP mem cacheability */
++bool tee_entry_is_sdp_cached(void);
++
+ #endif /* TEE_ENTRY_STD_H */
+diff --git a/core/arch/arm/tee/entry_std.c b/core/arch/arm/tee/entry_std.c
+index ab952569..9d7e2be0 100644
+--- a/core/arch/arm/tee/entry_std.c
++++ b/core/arch/arm/tee/entry_std.c
+@@ -516,6 +516,18 @@ uint32_t __tee_entry_std(struct optee_msg_arg *arg, uint32_t num_params)
+ 	return rv;
+ }
+ 
++bool tee_entry_is_sdp_cached(void)
++{
++#ifdef CFG_SECURE_DATA_PATH
++	uint32_t cattr;
++
++	if (!mobj_get_cattr(*sdp_mem_mobjs, &cattr))
++		return cattr & TEE_MATTR_CACHE_CACHED;
++#endif
++
++	return false;
++}
++
+ static TEE_Result default_mobj_init(void)
+ {
+ #ifdef CFG_CORE_RESERVED_SHM
+-- 
+2.17.1
+

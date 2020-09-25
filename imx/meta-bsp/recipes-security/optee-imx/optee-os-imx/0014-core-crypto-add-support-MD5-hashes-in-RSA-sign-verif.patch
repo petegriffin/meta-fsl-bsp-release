@@ -1,0 +1,113 @@
+From ce8a256002128e46e8436df0b94571e84c81ea0c Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Tue, 19 Jun 2018 09:13:09 +0300
+Subject: [PATCH 14/87] core: crypto: add support MD5 hashes in RSA sign/verify
+
+Introduce support of using MD5 hashes in RSA sign/verify operations, which
+is required by AOSP Keymaster.
+
+This is verified in  VerificationOperationsTest.RsaSuccess VTS Test [1],
+which checks usage of such digests: NONE, MD5, SHA1, SHA_2_224, SHA_2_256,
+SHA_2_384, SHA_2_512.
+
+[1]: https://android.googlesource.com/platform/hardware/interfaces/+/oreo-cts-release/keymaster/3.0/vts/functional/keymaster_hidl_hal_test.cpp
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+---
+ core/lib/libtomcrypt/rsa.c            | 4 ++++
+ core/tee/tee_svc_cryp.c               | 2 ++
+ lib/libutee/include/tee_api_defines.h | 2 ++
+ lib/libutee/tee_api_operations.c      | 2 ++
+ 4 files changed, 10 insertions(+)
+
+diff --git a/core/lib/libtomcrypt/rsa.c b/core/lib/libtomcrypt/rsa.c
+index d94a5d3c..912aad71 100644
+--- a/core/lib/libtomcrypt/rsa.c
++++ b/core/lib/libtomcrypt/rsa.c
+@@ -36,6 +36,8 @@ static TEE_Result tee_algo_to_ltc_hashindex(uint32_t algo, int *ltc_hashindex)
+ #endif
+ #if defined(_CFG_CORE_LTC_MD5)
+ 	case TEE_ALG_RSASSA_PKCS1_V1_5_MD5:
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5:
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_MD5:
+ 		*ltc_hashindex = find_hash("md5");
+ 		break;
+ #endif
+@@ -468,6 +470,7 @@ TEE_Result crypto_acipher_rsassa_sign(uint32_t algo, struct rsa_keypair *key,
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5:
+ 		ltc_rsa_algo = LTC_PKCS_1_PSS;
+ 		break;
+ 	default:
+@@ -577,6 +580,7 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5:
+ 		ltc_rsa_algo = LTC_PKCS_1_PSS;
+ 		break;
+ 	default:
+diff --git a/core/tee/tee_svc_cryp.c b/core/tee/tee_svc_cryp.c
+index 588e20e9..550f3477 100644
+--- a/core/tee/tee_svc_cryp.c
++++ b/core/tee/tee_svc_cryp.c
+@@ -3387,6 +3387,7 @@ TEE_Result syscall_asymm_operate(unsigned long state,
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA256:
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA384:
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA512:
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_MD5:
+ 		for (n = 0; n < num_params; n++) {
+ 			if (params[n].attributeID == TEE_ATTR_RSA_OAEP_LABEL) {
+ 				label = params[n].content.ref.buffer;
+@@ -3423,6 +3424,7 @@ TEE_Result syscall_asymm_operate(unsigned long state,
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5:
+ 		if (cs->mode != TEE_MODE_SIGN) {
+ 			res = TEE_ERROR_BAD_PARAMETERS;
+ 			break;
+diff --git a/lib/libutee/include/tee_api_defines.h b/lib/libutee/include/tee_api_defines.h
+index c71108ad..225435c9 100644
+--- a/lib/libutee/include/tee_api_defines.h
++++ b/lib/libutee/include/tee_api_defines.h
+@@ -147,12 +147,14 @@
+ #define TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256    0x70414930
+ #define TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384    0x70515930
+ #define TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512    0x70616930
++#define TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5       0x70111930
+ #define TEE_ALG_RSAES_PKCS1_V1_5                0x60000130
+ #define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA1      0x60210230
+ #define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA224    0x60310230
+ #define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA256    0x60410230
+ #define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA384    0x60510230
+ #define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA512    0x60610230
++#define TEE_ALG_RSAES_PKCS1_OAEP_MGF1_MD5       0x60110230
+ #define TEE_ALG_RSA_NOPAD                       0x60000030
+ #define TEE_ALG_DSA_SHA1                        0x70002131
+ #define TEE_ALG_DSA_SHA224                      0x70003131
+diff --git a/lib/libutee/tee_api_operations.c b/lib/libutee/tee_api_operations.c
+index 3e39ac80..e91af608 100644
+--- a/lib/libutee/tee_api_operations.c
++++ b/lib/libutee/tee_api_operations.c
+@@ -146,6 +146,7 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
+ 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
++	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_MD5:
+ 	case TEE_ALG_DSA_SHA1:
+ 	case TEE_ALG_DSA_SHA224:
+ 	case TEE_ALG_DSA_SHA256:
+@@ -170,6 +171,7 @@ TEE_Result TEE_AllocateOperation(TEE_OperationHandle *operation,
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA256:
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA384:
+ 	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_SHA512:
++	case TEE_ALG_RSAES_PKCS1_OAEP_MGF1_MD5:
+ 		if (mode == TEE_MODE_ENCRYPT) {
+ 			req_key_usage = TEE_USAGE_ENCRYPT;
+ 		} else if (mode == TEE_MODE_DECRYPT) {
+-- 
+2.17.1
+

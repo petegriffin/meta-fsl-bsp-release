@@ -1,0 +1,110 @@
+From eddfdcccfadec7ef080c1a1c6a59ef155275ac17 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Fri, 29 May 2020 12:40:59 +0200
+Subject: [PATCH 47/87] core: csu: add imx8m csu protection
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ core/arch/arm/plat-imx/conf.mk           |  2 +-
+ core/arch/arm/plat-imx/drivers/imx_csu.c | 10 ++++++++++
+ core/arch/arm/plat-imx/imx-common.c      |  5 +++++
+ core/arch/arm/plat-imx/imx.h             |  1 +
+ core/arch/arm/plat-imx/registers/imx8m.h |  6 ++++++
+ 5 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 00a6ef1c..0da78f9f 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -410,7 +410,7 @@ CFG_SECURE_TIME_SOURCE_REE ?= y
+ CFG_UART_BASE ?= UART1_BASE
+ endif
+ 
+-ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7)))
++ifneq (,$(filter y, $(CFG_MX6) $(CFG_MX7) $(CFG_MX8MQ) $(CFG_MX8MM)))
+ $(call force,CFG_IMX_UART,y)
+ CFG_CSU ?= y
+ endif
+diff --git a/core/arch/arm/plat-imx/drivers/imx_csu.c b/core/arch/arm/plat-imx/drivers/imx_csu.c
+index 66f7ea89..643756ae 100644
+--- a/core/arch/arm/plat-imx/drivers/imx_csu.c
++++ b/core/arch/arm/plat-imx/drivers/imx_csu.c
+@@ -53,6 +53,14 @@ const struct csu_setting csu_setting_imx7ds[] = {
+ 	{(-1), 0},
+ };
+ 
++const struct csu_setting csu_setting_imx8m[] = {
++	{14, 0x3300FF},		/* Protect RDC     */
++	{15, 0xFF0033},		/* Protect CSU     */
++	{28, 0xFF0033},		/* Protect TZASC   */
++	{59, 0x3300FF},		/* Protect OCRAM_S */
++	{(-1), 0},
++};
++
+ static TEE_Result csu_configure(void)
+ {
+ 	vaddr_t csu_base;
+@@ -73,6 +81,8 @@ static TEE_Result csu_configure(void)
+ 		csu_setting = csu_setting_imx6;
+ 	else if (soc_is_imx7ds())
+ 		csu_setting = csu_setting_imx7ds;
++	else if (soc_is_imx8m())
++		csu_setting = csu_setting_imx8m;
+ 	else
+ 		return TEE_SUCCESS;
+ 
+diff --git a/core/arch/arm/plat-imx/imx-common.c b/core/arch/arm/plat-imx/imx-common.c
+index adcce049..019f94d9 100644
+--- a/core/arch/arm/plat-imx/imx-common.c
++++ b/core/arch/arm/plat-imx/imx-common.c
+@@ -137,6 +137,11 @@ bool soc_is_imx7ulp(void)
+ 	return imx_soc_type() == SOC_MX7ULP;
+ }
+ 
++bool soc_is_imx8m(void)
++{
++	return imx_soc_type() == SOC_MX8M;
++}
++
+ bool soc_is_imx8mq_b0_layer(void)
+ {
+ 	if (imx_soc_type() == SOC_MX8M)
+diff --git a/core/arch/arm/plat-imx/imx.h b/core/arch/arm/plat-imx/imx.h
+index e5b6e583..1774141a 100644
+--- a/core/arch/arm/plat-imx/imx.h
++++ b/core/arch/arm/plat-imx/imx.h
+@@ -44,6 +44,7 @@ bool soc_is_imx6dq(void);
+ bool soc_is_imx6dqp(void);
+ bool soc_is_imx7ds(void);
+ bool soc_is_imx7ulp(void);
++bool soc_is_imx8m(void);
+ bool soc_is_imx8mq_b0_layer(void);
+ uint16_t soc_revision(void);
+ uint32_t imx_soc_type(void);
+diff --git a/core/arch/arm/plat-imx/registers/imx8m.h b/core/arch/arm/plat-imx/registers/imx8m.h
+index 276868bd..02807d9b 100644
+--- a/core/arch/arm/plat-imx/registers/imx8m.h
++++ b/core/arch/arm/plat-imx/registers/imx8m.h
+@@ -12,6 +12,7 @@
+ #define UART2_BASE	0x30890000
+ #define UART3_BASE	0x30880000
+ #define UART4_BASE	0x30A60000
++#define CSU_BASE	0x303E0000
+ #define TZASC_BASE	0x32F80000
+ #define TZASC_SIZE	0x10000
+ #define CAAM_BASE	0x30900000
+@@ -31,6 +32,11 @@
+ #endif
+ #endif
+ 
++#define CSU_CSL_START		0x0
++#define CSU_CSL_END		0x100
++#define	CSU_ACCESS_ALL		0x00FF00FF
++#define CSU_SETTING_LOCK	0x01000100
++
+ #ifdef CFG_MX8MQ
+ #define DIGPROG_OFFSET	0x06c
+ #define SW_INFO_B1	0x40
+-- 
+2.17.1
+

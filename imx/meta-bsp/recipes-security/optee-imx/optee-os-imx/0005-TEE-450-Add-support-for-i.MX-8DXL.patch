@@ -1,0 +1,125 @@
+From ec3934a4601c1e0ea62a4562721c1695d588afd7 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Fri, 28 Feb 2020 14:31:02 +0100
+Subject: [PATCH 05/87] TEE-450 Add support for i.MX 8DXL
+
+Adding i.MX 8DXL SoC support.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+(cherry picked from commit 7b3b2d78f61a6cc77685a930d9cd9c259ce678fd)
+---
+ core/arch/arm/plat-imx/conf.mk      | 19 ++++++++++++++++++-
+ core/arch/arm/plat-imx/imx-common.c |  2 ++
+ core/arch/arm/plat-imx/imx-regs.h   |  4 ++--
+ core/arch/arm/plat-imx/imx.h        |  1 +
+ scripts/nxp_build.sh                |  1 +
+ 5 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 6ac796d8..580b7fe0 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -77,6 +77,9 @@ mx8qx-flavorlist = \
+ 	mx8qxpmek \
+ 	mx8dxmek \
+ 
++mx8dxl-flavorlist = \
++	mx8dxlevk \
++
+ ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx6ul-flavorlist)))
+ $(call force,CFG_MX6,y)
+ $(call force,CFG_MX6UL,y)
+@@ -191,6 +194,15 @@ CFG_DRAM_BASE ?= 0x80000000
+ CFG_TEE_CORE_NB_CORE ?= 4
+ $(call force,CFG_NXP_CAAM,n)
+ $(call force,CFG_TZC380,n)
++else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8dxl-flavorlist)))
++$(call force,CFG_MX8DXL,y)
++$(call force,CFG_ARM64_core,y)
++$(call force,CFG_IMX_SNVS,n)
++CFG_IMX_LPUART ?= y
++CFG_DRAM_BASE ?= 0x80000000
++$(call force,CFG_TEE_CORE_NB_CORE,2)
++$(call force,CFG_NXP_CAAM,n)
++$(call force,CFG_TZC380,n)
+ else
+ $(error Unsupported PLATFORM_FLAVOR "$(PLATFORM_FLAVOR)")
+ endif
+@@ -340,6 +352,11 @@ CFG_UART_BASE ?= UART0_BASE
+ $(call force,CFG_MX8DX,y)
+ endif
+ 
++ifneq (,$(filter $(PLATFORM_FLAVOR),mx8dxlevk))
++CFG_DDR_SIZE ?= 0x40000000
++CFG_UART_BASE ?= UART0_BASE
++endif
++
+ # i.MX6 Solo/SL/SoloX/DualLite/Dual/Quad specific config
+ ifeq ($(filter y, $(CFG_MX6QP) $(CFG_MX6Q) $(CFG_MX6D) $(CFG_MX6DL) $(CFG_MX6S) \
+ 	$(CFG_MX6SL) $(CFG_MX6SLL) $(CFG_MX6SX)), y)
+@@ -417,7 +434,7 @@ endif
+ CFG_TZC380 ?= y
+ ifeq ($(CFG_ARM64_core),y)
+ #few special case to handle
+-ifneq (,$(filter y, $(CFG_MX8MP) $(CFG_MX8DX)))
++ifneq (,$(filter y, $(CFG_MX8MP) $(CFG_MX8DX) $(CFG_MX8DXL)))
+ # New device will have base addresses within the first 1GB of DDR
+ CFG_TZDRAM_START ?= ($(CFG_DRAM_BASE) + 0x16000000)
+ else
+diff --git a/core/arch/arm/plat-imx/imx-common.c b/core/arch/arm/plat-imx/imx-common.c
+index d51ec130..adcce049 100644
+--- a/core/arch/arm/plat-imx/imx-common.c
++++ b/core/arch/arm/plat-imx/imx-common.c
+@@ -31,6 +31,8 @@ static void imx_digproc(void)
+ 	digprog = SOC_MX8QX << 16;
+ #elif defined(CFG_MX8QM)
+ 	digprog = SOC_MX8QM << 16;
++#elif defined(CFG_MX8DXL)
++	digprog = SOC_MX8DXL << 16;
+ #else
+ 	base_addr = core_mmu_get_va(ANATOP_BASE, MEM_AREA_IO_SEC);
+ 
+diff --git a/core/arch/arm/plat-imx/imx-regs.h b/core/arch/arm/plat-imx/imx-regs.h
+index cae9da4e..0813b6ad 100644
+--- a/core/arch/arm/plat-imx/imx-regs.h
++++ b/core/arch/arm/plat-imx/imx-regs.h
+@@ -39,10 +39,10 @@
+ #elif defined(CFG_MX8MQ) || defined(CFG_MX8MM) || defined(CFG_MX8MN) ||        \
+ 	defined(CFG_MX8MP)
+ #include <registers/imx8m.h>
+-#elif defined(CFG_MX8QX) || defined(CFG_MX8QM)
++#elif defined(CFG_MX8QX) || defined(CFG_MX8QM) || defined(CFG_MX8DXL)
+ #include <registers/imx8q.h>
+ #else
+-#error "CFG_MX6/7/7ULP or CFG_MX8MQ/8MM/8MN/8MP/8QX/8QM is not defined"
++#error "CFG_MX6/7/7ULP or CFG_MX8MQ/8MM/8MN/8MP/8QX/8QM/8DXL is not defined"
+ #endif
+ 
+ #include <registers/snvs-regs.h>
+diff --git a/core/arch/arm/plat-imx/imx.h b/core/arch/arm/plat-imx/imx.h
+index e091f5c4..e5b6e583 100644
+--- a/core/arch/arm/plat-imx/imx.h
++++ b/core/arch/arm/plat-imx/imx.h
+@@ -22,6 +22,7 @@
+ #define SOC_MX7ULP	0xE1
+ #define SOC_MX8QX	0xE2
+ #define SOC_MX8QM	0xE3
++#define SOC_MX8DXL	0xE4
+ #define SOC_MX8M	0x82
+ 
+ #ifndef __ASSEMBLER__
+diff --git a/scripts/nxp_build.sh b/scripts/nxp_build.sh
+index f36ffed1..a421ac14 100755
+--- a/scripts/nxp_build.sh
++++ b/scripts/nxp_build.sh
+@@ -36,6 +36,7 @@ boards_list=(
+ 	mx8mpevk \
+ 	mx8qxpmek \
+ 	mx8qmmek \
++	mx8dxlevk \
+ 	ls1021atwr \
+ 	ls1021aqds \
+ 	ls1012ardb \
+-- 
+2.17.1
+

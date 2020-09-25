@@ -1,0 +1,37 @@
+From 9428cc1c63994a85f77b1797d40f6accb4dbb3f8 Mon Sep 17 00:00:00 2001
+From: Silvano di Ninno <silvano.dininno@nxp.com>
+Date: Fri, 6 Mar 2020 17:11:42 +0100
+Subject: [PATCH 06/87] TEE-521 core: imx: cleanup i.MX 8QM/QxP configuration
+
+Cleanup configuration for 8QM/8QxP to be consistent with
+the rest of the SoC.
+
+Signed-off-by: Silvano di Ninno <silvano.dininno@nxp.com>
+(cherry picked from commit 33ed3e1309ef074bd7f2cb9a903d40ed676904e0)
+---
+ core/arch/arm/plat-imx/conf.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/arch/arm/plat-imx/conf.mk b/core/arch/arm/plat-imx/conf.mk
+index 580b7fe0..6d4742d5 100644
+--- a/core/arch/arm/plat-imx/conf.mk
++++ b/core/arch/arm/plat-imx/conf.mk
+@@ -185,6 +185,7 @@ CFG_IMX_LPUART ?= y
+ CFG_DRAM_BASE ?= 0x80000000
+ CFG_TEE_CORE_NB_CORE ?= 6
+ $(call force,CFG_NXP_CAAM,n)
++$(call force,CFG_TZC380,n)
+ else ifneq (,$(filter $(PLATFORM_FLAVOR),$(mx8qx-flavorlist)))
+ $(call force,CFG_MX8QX,y)
+ $(call force,CFG_ARM64_core,y)
+@@ -343,7 +344,6 @@ endif
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8qxpmek mx8qmmek))
+ CFG_DDR_SIZE ?= 0x80000000
+ CFG_UART_BASE ?= UART0_BASE
+-$(call force,CFG_TZC380,n)
+ endif
+ 
+ ifneq (,$(filter $(PLATFORM_FLAVOR),mx8dxmek))
+-- 
+2.17.1
+

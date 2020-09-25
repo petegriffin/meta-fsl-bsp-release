@@ -1,0 +1,1061 @@
+From 74cd7ef556dabfefcda62a083c11dc6f1cb639ca Mon Sep 17 00:00:00 2001
+From: Cedric Neveux <cedric.neveux@nxp.com>
+Date: Fri, 27 Mar 2020 15:40:36 +0100
+Subject: [PATCH 64/87] TEE-527 drivers: caam: implement CAAM DMA Object
+
+Implementation of a CAAM DMA object to:
+  - create a DMA object (SGT/buffer) based on input/output buffers
+  - reallocate a new buffer accessible from the CAAM address space
+  - ensure buffer is cache aligned (for the output)
+
+Implementation of CAAM DMA object functions to:
+  - cache maintenance
+  - free CAAM DMA object
+
+Signed-off-by: Cedric Neveux <cedric.neveux@nxp.com>
+---
+ core/arch/arm/plat-imx/crypto_conf.mk         |   1 +
+ .../drivers/crypto/caam/include/caam_common.h |  66 +--
+ core/drivers/crypto/caam/include/caam_trace.h |   8 +
+ core/drivers/crypto/caam/include/caam_types.h |  71 +++
+ .../crypto/caam/include/caam_utils_dmaobj.h   | 121 +++++
+ .../crypto/caam/include/caam_utils_mem.h      |  10 +-
+ .../crypto/caam/include/caam_utils_sgt.h      |  19 +-
+ .../crypto/caam/include/caam_utils_status.h   |   9 +-
+ core/drivers/crypto/caam/utils/sub.mk         |   1 +
+ core/drivers/crypto/caam/utils/utils_dmaobj.c | 419 ++++++++++++++++++
+ core/drivers/crypto/caam/utils/utils_mem.c    |  15 +-
+ core/drivers/crypto/caam/utils/utils_sgt.c    |  64 ++-
+ core/drivers/crypto/caam/utils/utils_status.c |  22 +-
+ 13 files changed, 748 insertions(+), 78 deletions(-)
+ create mode 100644 core/drivers/crypto/caam/include/caam_types.h
+ create mode 100644 core/drivers/crypto/caam/include/caam_utils_dmaobj.h
+ create mode 100644 core/drivers/crypto/caam/utils/utils_dmaobj.c
+
+diff --git a/core/arch/arm/plat-imx/crypto_conf.mk b/core/arch/arm/plat-imx/crypto_conf.mk
+index dcd826aa..02eae54a 100644
+--- a/core/arch/arm/plat-imx/crypto_conf.mk
++++ b/core/arch/arm/plat-imx/crypto_conf.mk
+@@ -24,6 +24,7 @@
+ # DBG_SM     BIT32(13) // Secure Memory trace
+ # DBG_DH     BIT32(14) // DH Trace
+ # DBG_DSA    BIT32(15) // DSA trace
++# DBG_DMAOBJ BIT32(16) // DMA Object Trace
+ CFG_DBG_CAAM_TRACE ?= 0x2
+ CFG_DBG_CAAM_DESC ?= 0x0
+ CFG_DBG_CAAM_BUF ?= 0x0
+diff --git a/core/drivers/crypto/caam/include/caam_common.h b/core/drivers/crypto/caam/include/caam_common.h
+index 84b547e4..f328e933 100644
+--- a/core/drivers/crypto/caam/include/caam_common.h
++++ b/core/drivers/crypto/caam/include/caam_common.h
+@@ -1,9 +1,8 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+- * Brief   CAAM driver common include file.
+- *         Definition of the internal driver status codes.
++ * CAAM driver common include file.
+  */
+ 
+ #ifndef __CAAM_COMMON_H__
+@@ -12,7 +11,7 @@
+ #include <caam_desc_helper.h>
+ #include <caam_status.h>
+ #include <caam_trace.h>
+-#include <types_ext.h>
++#include <caam_types.h>
+ 
+ /*
+  * Definition of the number of CAAM Jobs to manage in JR queues
+@@ -38,63 +37,6 @@ enum caam_jr_owner {
+ 	JROWN_ARM_NS = 0x4,                  /* Non-Secure ARM */
+ 	JROWN_ARM_S = JROWNER_SECURE | 0x4,  /* Secure ARM */
+ };
+-#endif
+-
+-/*
+- * Definition of a CAAM buffer type
+- */
+-struct caambuf {
+-	uint8_t *data;   /* Data buffer */
+-	paddr_t paddr;   /* Physical address of the buffer */
+-	size_t length;   /* Number of bytes in the data buffer */
+-	uint8_t nocache; /* =1 if buffer is not cacheable, 0 otherwise */
+-};
+-
+-/*
+- * Definition of a CAAM Block buffer. Buffer used to store
+- * user source data to build a full algorithm block buffer
+- */
+-struct caamblock {
+-	struct caambuf buf; /* Data buffer */
+-	size_t filled;      /* Current length filled in the buffer */
+-	size_t max;         /* Maximum size of the block */
+-};
+-
+-/*
+- * Definition of key size
+- */
+-struct caamdefkey {
+-	uint8_t min; /* Minimum size */
+-	uint8_t max; /* Maximum size */
+-	uint8_t mod; /* Key modulus */
+-};
+-
+-/*
+- * Scatter/Gather Table type for input and output data
+- */
+-struct caamsgt {
+-	/* Word 0 */
+-	uint32_t ptr_ms;   /* Address pointer (MS 8 LSBs) */
+-
+-	/* Word 1 */
+-	uint32_t ptr_ls;   /* Address pointer (LS 32 bits) */
+-
+-	/* Word 2 */
+-	uint32_t len_f_e;  /* Length 30bits + 1bit Final + 1bit Extension) */
+-
+-	/* Word 3 */
+-	uint32_t offset;   /* Offset in memory buffer (13 LSBs) */
+-};
+-
+-/*
+- * Data buffer encoded in SGT format
+- */
+-struct caamsgtbuf {
+-	struct caamsgt *sgt; /* SGT Array */
+-	struct caambuf *buf; /* Buffer Array */
+-	unsigned int number; /* Number of SGT/Buf */
+-	size_t length;       /* Total length of the data encoded */
+-	bool sgt_type;       /* Define the data format */
+-};
++#endif /* CFG_MX7ULP */
+ 
+ #endif /* __CAAM_COMMON_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_trace.h b/core/drivers/crypto/caam/include/caam_trace.h
+index baf7c4fb..3d8f756c 100644
+--- a/core/drivers/crypto/caam/include/caam_trace.h
++++ b/core/drivers/crypto/caam/include/caam_trace.h
+@@ -41,6 +41,7 @@
+ #define DBG_TRACE_SM	 BIT32(13) /* Secure Memory trace */
+ #define DBG_TRACE_DH	 BIT32(14) /* DH trace */
+ #define DBG_TRACE_DSA	 BIT32(15) /* DSA trace */
++#define DBG_TRACE_DMAOBJ BIT32(16) /* DMA Object trace */
+ 
+ /* HAL */
+ #if CAAM_DBG_TRACE(HAL)
+@@ -302,6 +303,13 @@
+ #define DSA_DUMPBUF(...)
+ #endif
+ 
++/* DMA Object */
++#if CAAM_DBG_TRACE(DMAOBJ)
++#define DMAOBJ_TRACE DRV_TRACE
++#else
++#define DMAOBJ_TRACE(...)
++#endif
++
+ #if (TRACE_LEVEL >= TRACE_DEBUG)
+ #define DRV_TRACE(...)                                                         \
+ 	trace_printf(__func__, __LINE__, TRACE_DEBUG, true, __VA_ARGS__)
+diff --git a/core/drivers/crypto/caam/include/caam_types.h b/core/drivers/crypto/caam/include/caam_types.h
+new file mode 100644
+index 00000000..f7783015
+--- /dev/null
++++ b/core/drivers/crypto/caam/include/caam_types.h
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright 2020 NXP
++ *
++ * CAAM driver data type definition.
++ */
++
++#ifndef __CAAM_TYPES_H__
++#define __CAAM_TYPES_H__
++
++#include <types_ext.h>
++
++/*
++ * Definition of a CAAM buffer type
++ */
++struct caambuf {
++	uint8_t *data;	 /* Data buffer */
++	paddr_t paddr;	 /* Physical address of the buffer */
++	size_t length;	 /* Number of bytes in the data buffer */
++	uint8_t nocache; /* =1 if buffer is not cacheable, 0 otherwise */
++};
++
++/*
++ * Definition of a CAAM Block buffer. Buffer used to store
++ * user source data to build a full algorithm block buffer
++ */
++struct caamblock {
++	struct caambuf buf; /* Data buffer */
++	size_t filled;	    /* Current length filled in the buffer */
++	size_t max;	    /* Maximum size of the block */
++};
++
++/*
++ * Definition of key size
++ */
++struct caamdefkey {
++	uint8_t min; /* Minimum size */
++	uint8_t max; /* Maximum size */
++	uint8_t mod; /* Key modulus */
++};
++
++/*
++ * Scatter/Gather Table type for input and output data
++ */
++struct caamsgt {
++	/* Word 0 */
++	uint32_t ptr_ms;   /* Address pointer (MS 8 LSBs) */
++
++	/* Word 1 */
++	uint32_t ptr_ls;   /* Address pointer (LS 32 bits) */
++
++	/* Word 2 */
++	uint32_t len_f_e;  /* Length 30bits + 1bit Final + 1bit Extension) */
++
++	/* Word 3 */
++	uint32_t offset;   /* Offset in memory buffer (13 LSBs) */
++};
++
++/*
++ * Data buffer encoded in SGT format
++ */
++struct caamsgtbuf {
++	struct caamsgt *sgt; /* SGT Array */
++	struct caambuf *buf; /* Buffer Array */
++	unsigned int number; /* Number of SGT/Buf */
++	size_t length;       /* Total length of the data encoded */
++	paddr_t paddr;	     /* Physical address to use in CAAM descriptor */
++	bool sgt_type;       /* Define the data format */
++};
++
++#endif /* __CAAM_TYPES_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_utils_dmaobj.h b/core/drivers/crypto/caam/include/caam_utils_dmaobj.h
+new file mode 100644
+index 00000000..19558187
+--- /dev/null
++++ b/core/drivers/crypto/caam/include/caam_utils_dmaobj.h
+@@ -0,0 +1,121 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright 2020 NXP
++ *
++ * CAAM DMA data object utilities include file.
++ */
++#ifndef __CAAM_UTILS_DMAOBJ_H__
++#define __CAAM_UTILS_DMAOBJ_H__
++
++#include <caam_types.h>
++#include <caam_utils_sgt.h>
++#include <tee_api_types.h>
++
++/*
++ * CAAM DMA Object type
++ * Keep the original data/length reference
++ * If needed, reallocate a new buffer to be used by the CAAM
++ * If needed, create a CAAM SGT object for the CAAM
++ */
++struct caamdmaobj {
++	struct {
++		uint8_t *data; /* Original data buffer */
++		size_t length; /* Original data length */
++	} orig;
++
++	struct caambuf dmabuf;	  /* DMA buffer - original or reallocated */
++	struct caamsgtbuf sgtbuf; /* CAAM SGT or Buffer object */
++	unsigned int type;	  /* Encoded type of the object */
++};
++
++/*
++ * Initialize a CAAM DMA object of type input data.
++ * If necessary, a new CAAM Buffer is reallocated if given @data is not
++ * accessible by the CAAM DMA and input data copied into.
++ * If necessary, a CAAM SGT Object is constructed if physical area is not
++ * contiguous.
++ *
++ * @obj     [out] CAAM DMA object initialized
++ * @data    Input data pointer
++ * @length  Length in bytes of the input data
++ */
++TEE_Result caam_dmaobj_init_input(struct caamdmaobj *obj, const void *data,
++				  size_t len);
++
++/*
++ * Initialize a CAAM DMA object of type output data.
++ * If necessary, a new CAAM Buffer is reallocated if given @data is not
++ * accessible by the CAAM DMA or if the given @length is lower than
++ * @min_length requested for the CAAM operation.
++ * If necessary, a CAAM SGT Object is constructed if physical area is not
++ * contiguous.
++ *
++ * @obj         [out] CAAM DMA object initialized
++ * @data        Output data pointer
++ * @length      Length in bytes of the output data
++ * @min_length  Minimum length in bytes needed for the output data
++ */
++TEE_Result caam_dmaobj_init_output(struct caamdmaobj *obj, void *data,
++				   size_t length, size_t min_length);
++
++/*
++ * Push the data to physical memory with a cache clean or flush depending
++ * on the type of data, respectively input or output.
++ *
++ * @obj     CAAM DMA object
++ */
++void caam_dmaobj_cache_push(struct caamdmaobj *obj);
++
++/*
++ * Copy the CAAM DMA object buffer to the original data buffer.
++ *
++ * @obj     CAAM DMA object
++ */
++void caam_dmaobj_copy_to_orig(struct caamdmaobj *obj);
++
++/*
++ * Copy the CAAM DMA object buffer to the original data buffer removing
++ * non-significant first zeros (left zeros).
++ * If all DMA object buffer is zero, left only one zero in the destination.
++ *
++ * @obj    CAAM DMA object
++ */
++void caam_dmaobj_copy_ltrim_to_orig(struct caamdmaobj *obj);
++
++/*
++ * Free the CAAM DMA object.
++ * If a buffer has been reallocated, free it.
++ * Free the sgtbuf object.
++ *
++ * @obj     CAAM DMA object
++ */
++void caam_dmaobj_free(struct caamdmaobj *obj);
++
++/*
++ * Create a CAAM DMA object SGT type with the block buffer @block first and
++ * the CAAM DMA Object after
++ *
++ * @res     CAAM DMA object resulting
++ * @block   CAAM Block buffer to add first
++ * @obj     CAAM DMA object to add secondly
++ */
++TEE_Result caam_dmaobj_add_first_block(struct caamdmaobj *res,
++				       struct caamblock *block,
++				       struct caamdmaobj *obj);
++
++/*
++ * Derive a CAAM DMA object to a new DMA object of @length and starting at
++ * @offset from given @from object.
++ * There is no buffer reallocation but if necessary, a CAAM SGT Object is
++ * constructed if physical area is not contiguous.
++ *
++ * @obj     [out] CAAM DMA object derived
++ * @from    Original CAAM DMA object
++ * @offset  Offset to start from
++ * @length  Length in bytes of the data
++ */
++TEE_Result caam_dmaobj_derive(struct caamdmaobj *obj,
++			      const struct caamdmaobj *from, size_t offset,
++			      size_t length);
++
++#endif /* __CAAM_UTILS_DMAOBJ_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_utils_mem.h b/core/drivers/crypto/caam/include/caam_utils_mem.h
+index c5e4be00..b36485e9 100644
+--- a/core/drivers/crypto/caam/include/caam_utils_mem.h
++++ b/core/drivers/crypto/caam/include/caam_utils_mem.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   Memory management utilities.
+  *         Primitive to allocate, free memory.
+@@ -54,6 +54,14 @@ void caam_free_desc(uint32_t **ptr);
+  */
+ enum caam_status caam_calloc_buf(struct caambuf *buf, size_t size);
+ 
++/*
++ * Allocate internal driver buffer.
++ *
++ * @buf   [out] buffer allocated
++ * @size  size in bytes of the memory to allocate
++ */
++enum caam_status caam_alloc_buf(struct caambuf *buf, size_t size);
++
+ /*
+  * Allocate internal driver buffer aligned with a cache line and initialize
+  * if with 0's.
+diff --git a/core/drivers/crypto/caam/include/caam_utils_sgt.h b/core/drivers/crypto/caam/include/caam_utils_sgt.h
+index 17b90d93..38dd040f 100644
+--- a/core/drivers/crypto/caam/include/caam_utils_sgt.h
++++ b/core/drivers/crypto/caam/include/caam_utils_sgt.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   Scatter-Gather Table management utilities header.
+  */
+@@ -41,8 +41,8 @@ void caam_sgt_set_entry(struct caamsgt *sgt, vaddr_t paddr, size_t len,
+  * Build a SGT object with @block and @data buffer.
+  * If @block is defined, create a SGT with block buffer as first SGT entry
+  * and then the @data.
+- * If the @data buffer is a User buffer mapped on multiple Small Page,
+- * convert it in SGT entries corresponding to physical Small Page.
++ * If the @data buffer is a buffer mapped on non-contiguous physical areas,
++ * convert it in SGT entries.
+  *
+  * @sgtbuf [out] SGT object built
+  * @block  If not NULL, data block to be handled first
+@@ -52,4 +52,17 @@ enum caam_status caam_sgt_build_block_data(struct caamsgtbuf *sgtbuf,
+ 					   struct caamblock *block,
+ 					   struct caambuf *data);
+ 
++/*
++ * Build a SGT object with @data buffer.
++ * If the @data buffer is a buffer mapped on non-contiguous physical areas,
++ * convert it in SGT entries.
++ *
++ * @sgtbuf [out] SGT object built
++ * @data   Operation data
++ * @pabufs Physical Areas list of the @data buffer
++ */
++enum caam_status caam_sgt_build_data(struct caamsgtbuf *sgtbuf,
++				     struct caambuf *data,
++				     struct caambuf *pabufs);
++
+ #endif /* __CAAM_UTILS_SGT_H__ */
+diff --git a/core/drivers/crypto/caam/include/caam_utils_status.h b/core/drivers/crypto/caam/include/caam_utils_status.h
+index d2cf082d..8b2da444 100644
+--- a/core/drivers/crypto/caam/include/caam_utils_status.h
++++ b/core/drivers/crypto/caam/include/caam_utils_status.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: BSD-2-Clause */
+ /*
+- * Copyright 2019 NXP
++ * Copyright 2019-2020 NXP
+  *
+  * Brief   Status code management utilities header.
+  */
+@@ -17,4 +17,11 @@
+  */
+ TEE_Result job_status_to_tee_result(uint32_t status);
+ 
++/*
++ * Convert caam status code to TEE Result
++ *
++ * @status   caam status code
++ */
++TEE_Result caam_status_to_tee_result(enum caam_status status);
++
+ #endif /* __CAAM_UTILS_STATUS_H__ */
+diff --git a/core/drivers/crypto/caam/utils/sub.mk b/core/drivers/crypto/caam/utils/sub.mk
+index 78266066..e36a961a 100644
+--- a/core/drivers/crypto/caam/utils/sub.mk
++++ b/core/drivers/crypto/caam/utils/sub.mk
+@@ -4,3 +4,4 @@ srcs-y += utils_mem.c
+ srcs-y += utils_delay.c
+ srcs-y += utils_sgt.c
+ srcs-y += utils_status.c
++srcs-y += utils_dmaobj.c
+diff --git a/core/drivers/crypto/caam/utils/utils_dmaobj.c b/core/drivers/crypto/caam/utils/utils_dmaobj.c
+new file mode 100644
+index 00000000..65445867
+--- /dev/null
++++ b/core/drivers/crypto/caam/utils/utils_dmaobj.c
+@@ -0,0 +1,419 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2020 NXP
++ *
++ * CAAM DMA data object utilities.
++ */
++
++#include <caam_trace.h>
++#include <caam_utils_dmaobj.h>
++#include <caam_utils_mem.h>
++#include <caam_utils_sgt.h>
++#include <caam_utils_status.h>
++#include <mm/core_memprot.h>
++#include <string.h>
++#include <tee/cache.h>
++
++#if !defined(CFG_CAAM_64BIT) && defined(ARM64)
++#define IS_DMA_OVERFLOW(addr)                                                  \
++	({                                                                     \
++		__typeof__(addr) _addr = (addr);                               \
++		(_addr >> 32) ? 1 : 0;                                         \
++	})
++#else
++#define IS_DMA_OVERFLOW(addr) (0)
++#endif
++
++/*
++ * Local defines used to identify Object type as:
++ *  - input or output data
++ *  - reallocated buffer accessible by the CAAM
++ *  - SGT object created because buffer is not physical contiguous
++ *  - derived object (not buffer reallocation)
++ */
++#define DMAOBJ_INPUT   BIT(0)
++#define DMAOBJ_OUTPUT  BIT(1)
++#define DMAOBJ_REALLOC BIT(2)
++#define DMAOBJ_DERIVED BIT(3)
++
++/*
++ * Apply the cache operation @op to the DMA Object (SGT or buffer)
++ *
++ * @op    Cache operation
++ * @obj   CAAM DMA object
++ */
++static inline void dmaobj_cache_operation(enum utee_cache_operation op,
++					  struct caamdmaobj *obj)
++{
++	if (obj->sgtbuf.sgt_type)
++		caam_sgt_cache_op(op, &obj->sgtbuf);
++	else if (!obj->sgtbuf.buf->nocache)
++		cache_operation(op, obj->sgtbuf.buf->data,
++				obj->sgtbuf.buf->length);
++}
++
++/*
++ * Go through all the @buffer space to extract all physical area used to
++ * map the buffer.
++ * If one of the physical area is not accessible by the CAAM DMA, returns -1
++ * to indicate an error, else returns the number and the split of physical
++ * areas.
++ *
++ * @out_pabufs  [out] Physical areas split
++ * @buffer      Buffer to handle
++ */
++static int check_buffer_boundary(struct caambuf **out_pabufs,
++				 struct caambuf *buffer)
++{
++	struct caambuf *pabufs = NULL;
++	int nb_pa_area = -1;
++	int idx = 0;
++	paddr_t last_pa = 0;
++
++	/* Get the number of physical areas used by the input buffer @data */
++	nb_pa_area = caam_mem_get_pa_area(buffer, &pabufs);
++	if (nb_pa_area != -1) {
++		for (idx = nb_pa_area - 1; idx >= 0; idx--) {
++			if (ADD_OVERFLOW(pabufs[idx].paddr, pabufs[idx].length,
++					 &last_pa)) {
++				nb_pa_area = -1;
++				break;
++			}
++
++			if (IS_DMA_OVERFLOW(last_pa)) {
++				nb_pa_area = -1;
++				break;
++			}
++		}
++	}
++
++	if (nb_pa_area == -1) {
++		caam_free(pabufs);
++		pabufs = NULL;
++	}
++
++	*out_pabufs = pabufs;
++
++	DMAOBJ_TRACE("Number of pa area = %d", nb_pa_area);
++	return nb_pa_area;
++}
++
++TEE_Result caam_dmaobj_init_input(struct caamdmaobj *obj, const void *data,
++				  size_t length)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++	struct caambuf *pabufs = NULL;
++	int nb_pa_area = 0;
++
++	DMAOBJ_TRACE("Initialize Input object with data @%p of %zu bytes", data,
++		     length);
++
++	if (!data || !length || !obj)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/* Fill the CAAM Buffer object with the given input data */
++	obj->dmabuf.paddr = virt_to_phys((void *)data);
++	if (!obj->dmabuf.paddr) {
++		DMAOBJ_TRACE("Object virtual address error");
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	obj->dmabuf.data = (void *)data;
++	obj->dmabuf.length = length;
++	if (!caam_mem_is_cached_buf((void *)data, length))
++		obj->dmabuf.nocache = 1;
++
++	nb_pa_area = check_buffer_boundary(&pabufs, &obj->dmabuf);
++	if (nb_pa_area == -1) {
++		DMAOBJ_TRACE("Allocate a new buffer");
++		retstatus = caam_alloc_buf(&obj->dmabuf, length);
++		if (retstatus != CAAM_NO_ERROR)
++			goto end;
++
++		obj->type = DMAOBJ_REALLOC;
++
++		nb_pa_area = check_buffer_boundary(&pabufs, &obj->dmabuf);
++		if (nb_pa_area == -1) {
++			retstatus = CAAM_OUT_MEMORY;
++			goto end;
++		}
++	}
++
++	/* Set the object type as input */
++	obj->type |= DMAOBJ_INPUT;
++
++	/* Save the original data info */
++	obj->orig.data = (void *)data;
++	obj->orig.length = length;
++
++	obj->sgtbuf.number = nb_pa_area;
++
++	retstatus = caam_sgt_build_data(&obj->sgtbuf, &obj->dmabuf, pabufs);
++
++	/* Input buffer reallocated, need to copy input data */
++	if (retstatus == CAAM_NO_ERROR && obj->type & DMAOBJ_REALLOC)
++		memcpy(obj->dmabuf.data, data, length);
++
++end:
++	caam_free(pabufs);
++
++	DMAOBJ_TRACE("Object returns 0x%" PRIx32 " -> 0x%" PRIx32, retstatus,
++		     caam_status_to_tee_result(retstatus));
++
++	return caam_status_to_tee_result(retstatus);
++}
++
++TEE_Result caam_dmaobj_init_output(struct caamdmaobj *obj, void *data,
++				   size_t length, size_t min_length)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++	struct caambuf *pabufs = NULL;
++	int nb_pa_area = 0;
++	int realloc = 0;
++
++	DMAOBJ_TRACE("Initialize Output object with data @%p of %zu bytes",
++		     data, length);
++
++	if (!obj)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	if (length < min_length || !data) {
++		DMAOBJ_TRACE("Output buffer too short need %zu bytes",
++			     min_length);
++		retstatus = caam_alloc_align_buf(&obj->dmabuf, min_length);
++		if (retstatus != CAAM_NO_ERROR)
++			goto end;
++
++		realloc = 1;
++	} else {
++		realloc = caam_set_or_alloc_align_buf(data, &obj->dmabuf,
++						      min_length);
++		if (realloc == -1) {
++			retstatus = CAAM_OUT_MEMORY;
++			goto end;
++		}
++	}
++
++	if (!realloc) {
++		nb_pa_area = check_buffer_boundary(&pabufs, &obj->dmabuf);
++		if (nb_pa_area == -1) {
++			DMAOBJ_TRACE("Allocate a new buffer");
++			retstatus =
++				caam_alloc_align_buf(&obj->dmabuf, min_length);
++			if (retstatus != CAAM_NO_ERROR)
++				goto end;
++
++			realloc = 1;
++		}
++	}
++
++	if (realloc) {
++		obj->type = DMAOBJ_REALLOC;
++
++		nb_pa_area = check_buffer_boundary(&pabufs, &obj->dmabuf);
++		if (nb_pa_area == -1) {
++			retstatus = CAAM_OUT_MEMORY;
++			goto end;
++		}
++	}
++
++	/* Set the object type as output */
++	obj->type |= DMAOBJ_OUTPUT;
++
++	/* Save the original data info */
++	obj->orig.data = (void *)data;
++	obj->orig.length = length;
++
++	obj->sgtbuf.number = nb_pa_area;
++
++	retstatus = caam_sgt_build_data(&obj->sgtbuf, &obj->dmabuf, pabufs);
++
++end:
++	caam_free(pabufs);
++
++	DMAOBJ_TRACE("Object returns 0x%" PRIx32 " -> 0x%" PRIx32, retstatus,
++		     caam_status_to_tee_result(retstatus));
++
++	return caam_status_to_tee_result(retstatus);
++}
++
++void caam_dmaobj_cache_push(struct caamdmaobj *obj)
++{
++	enum utee_cache_operation op = TEE_CACHECLEAN;
++
++	if (obj) {
++		if (obj->type & DMAOBJ_OUTPUT)
++			op = TEE_CACHEFLUSH;
++
++		dmaobj_cache_operation(op, obj);
++	}
++}
++
++void caam_dmaobj_copy_to_orig(struct caamdmaobj *obj)
++{
++	size_t copy_size = 0;
++
++	if (obj) {
++		dmaobj_cache_operation(TEE_CACHEINVALIDATE, obj);
++
++		if (obj->type & DMAOBJ_REALLOC) {
++			copy_size = MIN(obj->orig.length, obj->dmabuf.length);
++			memcpy(obj->orig.data, obj->dmabuf.data, copy_size);
++			obj->orig.length = copy_size;
++		}
++	}
++}
++
++void caam_dmaobj_copy_ltrim_to_orig(struct caamdmaobj *obj)
++{
++	size_t offset = 0;
++	size_t copy_size = 0;
++
++	if (obj) {
++		dmaobj_cache_operation(TEE_CACHEINVALIDATE, obj);
++
++		/* Calculate the offset to start the copy */
++		while (!obj->dmabuf.data[offset] && offset < obj->dmabuf.length)
++			offset++;
++
++		if (offset >= obj->dmabuf.length)
++			offset = obj->dmabuf.length - 1;
++
++		copy_size = MIN(obj->orig.length, obj->dmabuf.length - offset);
++		MEM_TRACE("Copy %zu of src %zu bytes (offset = %zu)", copy_size,
++			  obj->dma.length, offset);
++		memcpy(obj->orig.data, &obj->dmabuf.data[offset], copy_size);
++
++		obj->orig.length = copy_size;
++	}
++}
++
++void caam_dmaobj_free(struct caamdmaobj *obj)
++{
++	if (obj) {
++		DMAOBJ_TRACE("Free %s object with data @%p of %zu bytes",
++			     obj->type & DMAOBJ_INPUT ? "Input" : "Output",
++			     obj->orig.data, obj->orig.length);
++
++		if (obj->type & DMAOBJ_REALLOC && !(obj->type & DMAOBJ_DERIVED))
++			caam_free_buf(&obj->dmabuf);
++
++		caam_sgtbuf_free(&obj->sgtbuf);
++	}
++}
++
++TEE_Result caam_dmaobj_add_first_block(struct caamdmaobj *res,
++				       struct caamblock *block,
++				       struct caamdmaobj *obj)
++{
++	enum caam_status retstatus = CAAM_BAD_PARAM;
++
++	if (!obj || !res || !block)
++		goto end;
++
++	/* Set the same DMA Object type than input @obj */
++	res->type = obj->type;
++
++	res->sgtbuf.sgt_type = true;
++	res->sgtbuf.number = 2;
++	res->sgtbuf.length = 0;
++
++	retstatus = caam_sgtbuf_alloc(&res->sgtbuf);
++	if (retstatus != CAAM_NO_ERROR)
++		goto end;
++
++	res->sgtbuf.buf[0].data = block->buf.data;
++	res->sgtbuf.buf[0].length = block->filled;
++	res->sgtbuf.buf[0].paddr = block->buf.paddr;
++	res->sgtbuf.buf[0].nocache = block->buf.nocache;
++	res->sgtbuf.length += block->filled;
++
++	CAAM_SGT_ENTRY(&res->sgtbuf.sgt[0], res->sgtbuf.buf[0].paddr,
++		       res->sgtbuf.buf[0].length);
++
++	if (obj->sgtbuf.sgt_type) {
++		res->sgtbuf.buf[1].data = (uint8_t *)&obj->sgtbuf;
++
++		res->sgtbuf.length += obj->sgtbuf.length;
++
++		CAAM_SGT_ENTRY_EXT(&res->sgtbuf.sgt[1], obj->sgtbuf.paddr,
++				   obj->sgtbuf.length);
++	} else {
++		res->sgtbuf.buf[1].data = obj->sgtbuf.buf->data;
++		res->sgtbuf.buf[1].length = obj->sgtbuf.buf->length;
++		res->sgtbuf.buf[1].paddr = obj->sgtbuf.buf->paddr;
++		res->sgtbuf.buf[1].nocache = obj->sgtbuf.buf->nocache;
++
++		res->sgtbuf.length += obj->sgtbuf.buf->length;
++
++		CAAM_SGT_ENTRY_FINAL(&res->sgtbuf.sgt[1], obj->sgtbuf.paddr,
++				     obj->sgtbuf.length);
++	}
++
++	res->sgtbuf.paddr = virt_to_phys(res->sgtbuf.sgt);
++
++	retstatus = CAAM_NO_ERROR;
++
++end:
++	return caam_status_to_tee_result(retstatus);
++}
++
++TEE_Result caam_dmaobj_derive(struct caamdmaobj *obj,
++			      const struct caamdmaobj *from, size_t offset,
++			      size_t length)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++	struct caambuf *pabufs = NULL;
++	int nb_pa_area = 0;
++	vaddr_t start = 0;
++
++	DMAOBJ_TRACE("Derive DMA object %p - offset %zu - length %zu bytes",
++		     from, offset, length);
++
++	if (!obj)
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	/*
++	 * Set the same object type and add derived type
++	 * to not free buffer if reallocated.
++	 */
++	obj->type = from->type | DMAOBJ_DERIVED;
++
++	/* Derive original buffer starting at @offset of @length */
++	if (ADD_OVERFLOW((vaddr_t)from->orig.data, offset, &start))
++		return TEE_ERROR_OVERFLOW;
++	obj->orig.data = (uint8_t *)start;
++	obj->orig.length = length;
++
++	DMAOBJ_TRACE("Object orig start @%p = @%p + %zu", obj->orig.data,
++		     from->orig.data, offset);
++
++	/* Derive DMA buffer starting at @offset of @length */
++	if (ADD_OVERFLOW((vaddr_t)from->dmabuf.data, offset, &start))
++		return TEE_ERROR_OVERFLOW;
++	obj->dmabuf.data = (uint8_t *)start;
++	obj->dmabuf.length = length;
++	obj->dmabuf.nocache = from->dmabuf.nocache;
++	obj->dmabuf.paddr = virt_to_phys(obj->dmabuf.data);
++
++	DMAOBJ_TRACE("Object DMA start @%p = @%p + %zu", obj->dmabuf.data,
++		     from->dmabuf.data, offset);
++
++	nb_pa_area = check_buffer_boundary(&pabufs, &obj->dmabuf);
++	if (nb_pa_area == -1) {
++		retstatus = CAAM_OUT_MEMORY;
++		goto end;
++	}
++
++	obj->sgtbuf.number = nb_pa_area;
++
++	retstatus = caam_sgt_build_data(&obj->sgtbuf, &obj->dmabuf, pabufs);
++
++end:
++	caam_free(pabufs);
++
++	DMAOBJ_TRACE("Object returns 0x%" PRIx32 " -> 0x%" PRIx32, retstatus,
++		     caam_status_to_tee_result(retstatus));
++
++	return caam_status_to_tee_result(retstatus);
++}
+diff --git a/core/drivers/crypto/caam/utils/utils_mem.c b/core/drivers/crypto/caam/utils/utils_mem.c
+index d9ddf55f..168709aa 100644
+--- a/core/drivers/crypto/caam/utils/utils_mem.c
++++ b/core/drivers/crypto/caam/utils/utils_mem.c
+@@ -14,15 +14,6 @@
+ #include <tee/entry_std.h>
+ #include <string.h>
+ 
+-/*
+- * CAAM Descriptor address alignment
+- */
+-#ifdef ARM64
+-#define DESC_START_ALIGN	(64 / 8)
+-#else
+-#define DESC_START_ALIGN	(32 / 8)
+-#endif
+-
+ /*
+  * Check if pointer p is aligned with align
+  */
+@@ -60,6 +51,7 @@ static uint32_t read_cacheline_size(void)
+ 	return value;
+ }
+ 
++#define MEM_TYPE_NORMAL 0      /* Normal allocation */
+ #define MEM_TYPE_ZEROED	BIT(0) /* Buffer filled with 0's */
+ #define MEM_TYPE_ALIGN	BIT(1) /* Address and size aligned on a cache line */
+ 
+@@ -298,6 +290,11 @@ void caam_free_desc(uint32_t **ptr)
+ 	*ptr = NULL;
+ }
+ 
++enum caam_status caam_alloc_buf(struct caambuf *buf, size_t size)
++{
++	return mem_alloc_buf(buf, size, MEM_TYPE_NORMAL);
++}
++
+ enum caam_status caam_calloc_buf(struct caambuf *buf, size_t size)
+ {
+ 	return mem_alloc_buf(buf, size, MEM_TYPE_ZEROED);
+diff --git a/core/drivers/crypto/caam/utils/utils_sgt.c b/core/drivers/crypto/caam/utils/utils_sgt.c
+index 41e4ff43..1ca3eef1 100644
+--- a/core/drivers/crypto/caam/utils/utils_sgt.c
++++ b/core/drivers/crypto/caam/utils/utils_sgt.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2018-2019 NXP
++ * Copyright 2018-2020 NXP
+  *
+  * Brief   Scatter-Gatter Table management utilities.
+  */
+@@ -24,7 +24,21 @@ void caam_sgt_cache_op(enum utee_cache_operation op, struct caamsgtbuf *insgt)
+ 
+ 	cache_operation(TEE_CACHECLEAN, (void *)insgt->sgt,
+ 			insgt->number * sizeof(struct caamsgt));
++
++	SGT_TRACE("SGT @%p %d entries", insgt, insgt->number);
+ 	for (idx = 0; idx < insgt->number; idx++) {
++		if (insgt->sgt[idx].len_f_e & BS_ENTRY_EXT) {
++			SGT_TRACE("SGT EXT @%p", insgt->buf[idx].data);
++			caam_sgt_cache_op(op, (void *)insgt->buf[idx].data);
++
++			/*
++			 * Extension entry is the last entry of the
++			 * current SGT, even if there are entries
++			 * after, they are not used.
++			 */
++			break;
++		}
++
+ 		if (!insgt->buf[idx].nocache)
+ 			cache_operation(op, (void *)insgt->buf[idx].data,
+ 					insgt->buf[idx].length);
+@@ -177,3 +191,51 @@ exit_build_block:
+ 
+ 	return retstatus;
+ }
++
++enum caam_status caam_sgt_build_data(struct caamsgtbuf *sgtbuf,
++				     struct caambuf *data,
++				     struct caambuf *pabufs)
++{
++	enum caam_status retstatus = CAAM_FAILURE;
++
++	/*
++	 * If data is mapped on non-contiguous physical areas,
++	 * a SGT object of the number of physical area is built.
++	 *
++	 * Otherwise create a buffer object.
++	 */
++	if (sgtbuf->number > 1) {
++		sgtbuf->sgt_type = true;
++		sgtbuf->length = 0;
++
++		SGT_TRACE("Allocate %d SGT entries", sgtbuf->number);
++		retstatus = caam_sgtbuf_alloc(sgtbuf);
++
++		if (retstatus != CAAM_NO_ERROR)
++			return retstatus;
++
++		/* Build the SGT table based on the physical area list */
++		caam_sgt_fill_table(pabufs, sgtbuf, 0, sgtbuf->number);
++
++		sgtbuf->paddr = virt_to_phys(sgtbuf->sgt);
++	} else {
++		/*
++		 * Only the data buffer is to be used and it's not
++		 * split on mutliple physical pages
++		 */
++		sgtbuf->sgt_type = false;
++
++		retstatus = caam_sgtbuf_alloc(sgtbuf);
++		if (retstatus != CAAM_NO_ERROR)
++			return retstatus;
++
++		sgtbuf->buf->data = data->data;
++		sgtbuf->buf->length = data->length;
++		sgtbuf->buf->paddr = data->paddr;
++		sgtbuf->buf->nocache = data->nocache;
++		sgtbuf->length = data->length;
++		sgtbuf->paddr = sgtbuf->buf->paddr;
++	}
++
++	return CAAM_NO_ERROR;
++}
+diff --git a/core/drivers/crypto/caam/utils/utils_status.c b/core/drivers/crypto/caam/utils/utils_status.c
+index f62e4bab..01199988 100644
+--- a/core/drivers/crypto/caam/utils/utils_status.c
++++ b/core/drivers/crypto/caam/utils/utils_status.c
+@@ -1,10 +1,11 @@
+ // SPDX-License-Identifier: BSD-2-Clause
+ /*
+- * Copyright 2019 NXP
++ * Copyright 2019-2020 NXP
+  *
+  * Brief   Status management utilities.
+  */
+ #include <caam_jr_status.h>
++#include <caam_status.h>
+ #include <caam_utils_status.h>
+ 
+ TEE_Result job_status_to_tee_result(uint32_t status)
+@@ -24,3 +25,22 @@ TEE_Result job_status_to_tee_result(uint32_t status)
+ 
+ 	return TEE_ERROR_GENERIC;
+ }
++
++TEE_Result caam_status_to_tee_result(enum caam_status status)
++{
++	switch (status) {
++	case CAAM_NO_ERROR:
++		return TEE_SUCCESS;
++
++	case CAAM_OUT_MEMORY:
++		return TEE_ERROR_OUT_OF_MEMORY;
++
++	case CAAM_BAD_PARAM:
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	default:
++		break;
++	}
++
++	return TEE_ERROR_GENERIC;
++}
+-- 
+2.17.1
+
