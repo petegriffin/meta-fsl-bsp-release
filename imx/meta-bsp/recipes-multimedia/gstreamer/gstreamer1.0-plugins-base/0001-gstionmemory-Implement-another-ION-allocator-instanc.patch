@@ -1,0 +1,236 @@
+From 9a3ee4232f0c433252b979dffc1db3c028cfff1a Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 9 Jan 2020 10:21:18 -0500
+Subject: [PATCH 1/4] gstionmemory: Implement another ION allocator instance
+ for encoded data
+
+For the Secure Data Path implementation, there is a requirement to use
+different ION heaps for encoded frames (VPU heap) and decoded frames
+(display heap).
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ gst-libs/gst/allocators/gstionmemory.c | 94 ++++++++++++++++++++++++--
+ gst-libs/gst/allocators/gstionmemory.h |  7 ++
+ 2 files changed, 95 insertions(+), 6 deletions(-)
+
+diff --git a/gst-libs/gst/allocators/gstionmemory.c b/gst-libs/gst/allocators/gstionmemory.c
+index 1218c4ad0..89daec227 100644
+--- a/gst-libs/gst/allocators/gstionmemory.c
++++ b/gst-libs/gst/allocators/gstionmemory.c
+@@ -41,6 +41,8 @@ GST_DEBUG_CATEGORY_STATIC (ion_allocator_debug);
+ 
+ #define gst_ion_allocator_parent_class parent_class
+ 
++#define INVALID_HEAP_ID (G_MAXUINT)
++
+ #define DEFAULT_HEAP_ID  0
+ #define DEFAULT_FLAG     0
+ 
+@@ -123,12 +125,48 @@ gst_ion_ioctl (gint fd, gint req, void *arg)
+   return ret;
+ }
+ 
++
++static guint gst_ion_get_heap_id(GstIONAllocator *self, const gchar *heap_name)
++{
++    #define MAX_HEAP_COUNT 32
++
++    struct ion_heap_query query_data;
++    struct ion_heap_data heap_data[MAX_HEAP_COUNT];
++    uint32_t idx;
++
++    memset(&query_data, 0, sizeof(query_data));
++    memset(&heap_data[0], 0, sizeof(heap_data));
++    query_data.cnt = MAX_HEAP_COUNT;
++    query_data.heaps = (unsigned long int)&heap_data[0];
++    if (ioctl(self->fd, ION_IOC_HEAP_QUERY, &query_data) < 0) {
++      GST_ERROR("Cannot query ION heap data (%s)", strerror(errno));
++      return INVALID_HEAP_ID;
++    }
++
++    for (idx = 0; idx < query_data.cnt; idx++)
++    {
++      GST_DEBUG("heap[%u] name is: %s", idx, heap_data[idx].name);
++      if (strcmp(heap_data[idx].name, heap_name) == 0)
++        break;
++    }
++    if (idx >= query_data.cnt) {
++      GST_ERROR("Cannot find %s heap\n", heap_name);
++      return INVALID_HEAP_ID;
++    }
++
++    GST_INFO("Heap ID for %s heap is %u", heap_name, heap_data[idx].heap_id);
++
++    return heap_data[idx].heap_id;
++}
++
++
+ static void
+-gst_ion_mem_init (void)
++gst_ion_mem_init (const gchar *name)
+ {
+   GstAllocator *allocator = g_object_new (gst_ion_allocator_get_type (), NULL);
+   GstIONAllocator *self = GST_ION_ALLOCATOR (allocator);
+   gint fd;
++  const gchar *heap_name = GST_ALLOCATOR_ION_DISPLAY_HEAP_NAME;
+ 
+   fd = open ("/dev/ion", O_RDWR);
+   if (fd < 0) {
+@@ -139,7 +177,17 @@ gst_ion_mem_init (void)
+ 
+   self->fd = fd;
+ 
+-  gst_allocator_register (GST_ALLOCATOR_ION, allocator);
++  if(strcmp(name, GST_ALLOCATOR_ION_VPU) == 0) {
++    heap_name = GST_ALLOCATOR_ION_VPU_HEAP_NAME;
++  }
++
++  self->heap_id = gst_ion_get_heap_id(self, heap_name);
++  if(self->heap_id == INVALID_HEAP_ID) {
++    g_object_unref (self);
++    return;
++  }
++
++  gst_allocator_register (name, allocator);
+ }
+ 
+ GstAllocator *
+@@ -148,7 +196,7 @@ gst_ion_allocator_obtain (void)
+   static GOnce ion_allocator_once = G_ONCE_INIT;
+   GstAllocator *allocator;
+ 
+-  g_once (&ion_allocator_once, (GThreadFunc) gst_ion_mem_init, NULL);
++  g_once (&ion_allocator_once, (GThreadFunc) gst_ion_mem_init, GST_ALLOCATOR_ION);
+ 
+   allocator = gst_allocator_find (GST_ALLOCATOR_ION);
+   if (allocator == NULL)
+@@ -157,16 +205,42 @@ gst_ion_allocator_obtain (void)
+   return allocator;
+ }
+ 
++GstAllocator *
++gst_ion_allocator_vpu_obtain (void)
++{
++  static GOnce ion_allocator_vpu_once = G_ONCE_INIT;
++  GstAllocator *allocator;
++  GstIONAllocator *self;
++
++  g_once (&ion_allocator_vpu_once, (GThreadFunc) gst_ion_mem_init, GST_ALLOCATOR_ION_VPU);
++
++  allocator = gst_allocator_find (GST_ALLOCATOR_ION_VPU);
++  if (allocator == NULL)
++    GST_WARNING ("No allocator named %s found", GST_ALLOCATOR_ION_VPU);
++
++  /* Configure as secure */
++  self = GST_ION_ALLOCATOR (allocator);
++  self->is_secure = TRUE;
++
++  return allocator;
++}
++
+ static GstMemory *
+ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+     GstAllocationParams * params)
+ {
+   GstIONAllocator *self = GST_ION_ALLOCATOR (allocator);
++
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
++#define LEGACY_ION_API
++#endif
++
+   struct ion_allocation_data allocation_data = { 0 };
++#ifdef ION_LEGACY_API
+   struct ion_fd_data fd_data = { 0 };
+   struct ion_handle_data handle_data = { 0 };
+   ion_user_handle_t ion_handle;
++#endif
+   GstMemory *mem;
+   gsize ion_size;
+   gint dma_fd = -1;
+@@ -179,13 +253,16 @@ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+ 
+   ion_size = size + params->prefix + params->padding;
+   allocation_data.len = ion_size;
++#ifdef LEGACY_ION_API
+   allocation_data.align = params->align;
++#endif
+   allocation_data.heap_id_mask = 1 << self->heap_id;
+   allocation_data.flags = self->flags;
+   if (gst_ion_ioctl (self->fd, ION_IOC_ALLOC, &allocation_data) < 0) {
+     GST_ERROR ("ion allocate failed.");
+     return NULL;
+   }
++#ifdef LEGACY_ION_API
+   ion_handle = allocation_data.handle;
+ 
+   fd_data.handle = ion_handle;
+@@ -198,8 +275,11 @@ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+ 
+   handle_data.handle = ion_handle;
+   gst_ion_ioctl (self->fd, ION_IOC_FREE, &handle_data);
+-
+ #else
++  dma_fd = allocation_data.fd;
++#endif
++
++#if 0
+   gint heapCnt = 0;
+   gint heap_mask = 0;
+   GstMemory *mem;
+@@ -226,6 +306,7 @@ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+     return NULL;
+   }
+ 
++  // Something is wrong here!!!
+   for (gint i=0; i<heapCnt; i++) {
+     if (ihd[i].type == ION_HEAP_TYPE_DMA) {
+       heap_mask |=  1 << ihd[i].heap_id;
+@@ -253,16 +334,17 @@ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+ 
+   return mem;
+ 
++#ifdef LEGACY_ION_API
+ bail:
+   if (dma_fd >= 0) {
+     close (dma_fd);
+   }
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
++
+   handle_data.handle = ion_handle;
+   gst_ion_ioctl (self->fd, ION_IOC_FREE, &handle_data);
+-#endif
+ 
+   return NULL;
++#endif
+ }
+ 
+ static void
+diff --git a/gst-libs/gst/allocators/gstionmemory.h b/gst-libs/gst/allocators/gstionmemory.h
+index 434cdec91..75c329624 100644
+--- a/gst-libs/gst/allocators/gstionmemory.h
++++ b/gst-libs/gst/allocators/gstionmemory.h
+@@ -31,6 +31,10 @@ typedef struct _GstIONAllocatorClass GstIONAllocatorClass;
+ typedef struct _GstIONMemory GstIONMemory;
+ 
+ #define GST_ALLOCATOR_ION "ionmem"
++#define GST_ALLOCATOR_ION_VPU "vpuionmem"
++
++#define GST_ALLOCATOR_ION_DISPLAY_HEAP_NAME "display"
++#define GST_ALLOCATOR_ION_VPU_HEAP_NAME "optee"
+ 
+ #define GST_TYPE_ION_ALLOCATOR gst_ion_allocator_get_type ()
+ #define GST_IS_ION_ALLOCATOR(obj) (G_TYPE_CHECK_INSTANCE_TYPE ((obj), \
+@@ -63,6 +67,9 @@ GType gst_ion_allocator_get_type (void);
+ GST_EXPORT
+ GstAllocator* gst_ion_allocator_obtain (void);
+ 
++GST_EXPORT
++GstAllocator* gst_ion_allocator_vpu_obtain (void);
++
+ G_END_DECLS
+ 
+ #endif /* __GST_IONMEMORY_H__ */
+-- 
+2.17.1
+

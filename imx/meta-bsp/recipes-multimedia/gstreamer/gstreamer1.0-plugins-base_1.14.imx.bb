@@ -31,7 +31,11 @@ SRC_URI = " \
     file://0001-introspection.m4-prefix-pkgconfig-paths-with-PKG_CON.patch \
     file://make-gio_unix_2_0-dependency-configurable.patch \
 "
-#DRM_PATCH
+
+SRC_URI += "file://0001-gstionmemory-Implement-another-ION-allocator-instanc.patch;md5sum=38df4759def3cf76eca4bc4781bcb10c" 
+SRC_URI += "file://0002-allocators-Support-secure-ION-buffers.patch;md5sum=e829b443aa98540f930ab59e1741b59d" 
+SRC_URI += "file://0003-fdmemory-Allocate-fixed-size-4-MB-shared-data-for-ea.patch;md5sum=c25f34bd3c142969a3bc9c1505d64a21" 
+SRC_URI += "file://0004-MMIOT-498-Restore-the-default-ion-allocator-and-crea.patch;md5sum=7bcbd9c4454fa2798af62664cd6a33b0" 
 SRCREV = "5e8cc757e4fec72ee007ac12fab2d1333fce1dc9" 
 
 inherit use-imx-headers

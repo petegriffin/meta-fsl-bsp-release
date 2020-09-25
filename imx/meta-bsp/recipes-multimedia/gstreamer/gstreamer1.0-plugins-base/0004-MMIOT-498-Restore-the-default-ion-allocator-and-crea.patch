@@ -1,0 +1,129 @@
+From fde7b8b2b73ee72ac6eafeffad12064d1049d772 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Mon, 8 Jun 2020 21:46:33 -0400
+Subject: [PATCH 4/4] MMIOT-498: Restore the default ion allocator and create
+ the API for display ion allocator
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ gst-libs/gst/allocators/gstionmemory.c | 49 ++++++++++++++++++++------
+ gst-libs/gst/allocators/gstionmemory.h | 10 ++++--
+ 2 files changed, 45 insertions(+), 14 deletions(-)
+
+diff --git a/gst-libs/gst/allocators/gstionmemory.c b/gst-libs/gst/allocators/gstionmemory.c
+index 4ca910b91..6d1c71ee6 100644
+--- a/gst-libs/gst/allocators/gstionmemory.c
++++ b/gst-libs/gst/allocators/gstionmemory.c
+@@ -166,7 +166,7 @@ gst_ion_mem_init (const gchar *name)
+   GstAllocator *allocator = g_object_new (gst_ion_allocator_get_type (), NULL);
+   GstIONAllocator *self = GST_ION_ALLOCATOR (allocator);
+   gint fd;
+-  const gchar *heap_name = GST_ALLOCATOR_ION_DISPLAY_HEAP_NAME;
++  const gchar *heap_name = NULL;
+ 
+   fd = open ("/dev/ion", O_RDWR);
+   if (fd < 0) {
+@@ -177,14 +177,20 @@ gst_ion_mem_init (const gchar *name)
+ 
+   self->fd = fd;
+ 
+-  if(strcmp(name, GST_ALLOCATOR_ION_VPU) == 0) {
+-    heap_name = GST_ALLOCATOR_ION_VPU_HEAP_NAME;
++  if(strcmp(name, GST_ALLOCATOR_ION_SECURE_VPU) == 0) {
++    heap_name = GST_ALLOCATOR_ION_SECURE_VPU_HEAP_NAME;
++  } else if (strcmp(name, GST_ALLOCATOR_ION_SECURE_DISPLAY) == 0) {
++    heap_name = GST_ALLOCATOR_ION_SECURE_DISPLAY_HEAP_NAME;
+   }
+ 
+-  self->heap_id = gst_ion_get_heap_id(self, heap_name);
+-  if(self->heap_id == INVALID_HEAP_ID) {
+-    g_object_unref (self);
+-    return;
++  if (heap_name != NULL) {
++    self->heap_id = gst_ion_get_heap_id(self, heap_name);
++    if(self->heap_id == INVALID_HEAP_ID) {
++      g_object_unref (self);
++      return;
++    }
++  } else {
++    self->heap_id = DEFAULT_HEAP_ID;
+   }
+ 
+   gst_allocator_register (name, allocator);
+@@ -212,19 +218,40 @@ gst_ion_allocator_vpu_obtain (void)
+   GstAllocator *allocator;
+   GstIONAllocator *self;
+ 
+-  g_once (&ion_allocator_vpu_once, (GThreadFunc) gst_ion_mem_init, GST_ALLOCATOR_ION_VPU);
++  g_once (&ion_allocator_vpu_once, (GThreadFunc) gst_ion_mem_init, GST_ALLOCATOR_ION_SECURE_VPU);
+ 
+-  allocator = gst_allocator_find (GST_ALLOCATOR_ION_VPU);
++  allocator = gst_allocator_find (GST_ALLOCATOR_ION_SECURE_VPU);
+   if (allocator == NULL)
+-    GST_WARNING ("No allocator named %s found", GST_ALLOCATOR_ION_VPU);
++    GST_WARNING ("No allocator named %s found", GST_ALLOCATOR_ION_SECURE_VPU);
+ 
+-  /* Configure as secure */
+   self = GST_ION_ALLOCATOR (allocator);
++  /* Configure as secure: Allocated GstBuffer will hold two buffers: one for
++     metadata in shared memory and one for the decrypted data in secure ion
++     heap. */
+   self->is_secure = TRUE;
+ 
+   return allocator;
+ }
+ 
++GstAllocator *
++gst_ion_allocator_display_obtain (void)
++{
++  static GOnce ion_allocator_display_once = G_ONCE_INIT;
++  GstAllocator *allocator;
++  GstIONAllocator *self;
++
++  g_once (&ion_allocator_display_once, (GThreadFunc) gst_ion_mem_init, GST_ALLOCATOR_ION_SECURE_DISPLAY);
++
++  allocator = gst_allocator_find (GST_ALLOCATOR_ION_SECURE_DISPLAY);
++  if (allocator == NULL)
++    GST_WARNING ("No allocator named %s found", GST_ALLOCATOR_ION_SECURE_DISPLAY);
++
++  self = GST_ION_ALLOCATOR (allocator);
++  /* Do not configure as secure which is appropriate for the vpu heap only. */
++
++  return allocator;
++}
++
+ static GstMemory *
+ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+     GstAllocationParams * params)
+diff --git a/gst-libs/gst/allocators/gstionmemory.h b/gst-libs/gst/allocators/gstionmemory.h
+index 719bb15da..775ff09f3 100644
+--- a/gst-libs/gst/allocators/gstionmemory.h
++++ b/gst-libs/gst/allocators/gstionmemory.h
+@@ -31,10 +31,11 @@ typedef struct _GstIONAllocatorClass GstIONAllocatorClass;
+ typedef struct _GstIONMemory GstIONMemory;
+ 
+ #define GST_ALLOCATOR_ION "ionmem"
+-#define GST_ALLOCATOR_ION_VPU "vpuionmem"
++#define GST_ALLOCATOR_ION_SECURE_DISPLAY "displayionmem"
++#define GST_ALLOCATOR_ION_SECURE_VPU "vpuionmem"
+ 
+-#define GST_ALLOCATOR_ION_DISPLAY_HEAP_NAME "display"
+-#define GST_ALLOCATOR_ION_VPU_HEAP_NAME "optee"
++#define GST_ALLOCATOR_ION_SECURE_DISPLAY_HEAP_NAME "display"
++#define GST_ALLOCATOR_ION_SECURE_VPU_HEAP_NAME "optee"
+ 
+ #define GST_TYPE_ION_ALLOCATOR gst_ion_allocator_get_type ()
+ #define GST_IS_ION_ALLOCATOR(obj) (G_TYPE_CHECK_INSTANCE_TYPE ((obj), \
+@@ -71,6 +72,9 @@ GstAllocator* gst_ion_allocator_obtain (void);
+ GST_EXPORT
+ GstAllocator* gst_ion_allocator_vpu_obtain (void);
+ 
++GST_EXPORT
++GstAllocator* gst_ion_allocator_display_obtain (void);
++
+ G_END_DECLS
+ 
+ #endif /* __GST_IONMEMORY_H__ */
+-- 
+2.17.1
+

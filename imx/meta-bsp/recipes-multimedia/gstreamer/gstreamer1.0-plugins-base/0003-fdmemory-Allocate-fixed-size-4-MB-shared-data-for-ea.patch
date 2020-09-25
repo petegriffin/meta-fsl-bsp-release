@@ -1,0 +1,48 @@
+From a50ca09d6c3fc64ff9012e58a9fc2778c256c2a3 Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Fri, 14 Feb 2020 09:01:37 -0500
+Subject: [PATCH 3/4] fdmemory: Allocate fixed size (4 MB) shared data for each
+ secure buffer
+
+For SDP, VPU wrapper expects a fixed size buffer containing the metadata.
+Based on measurements for 4K contents, the largest encoded data chunk are
+slightly larger than 1 MB. We are allocating 4 MB to be safe.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ gst-libs/gst/allocators/gstfdmemory.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/gst-libs/gst/allocators/gstfdmemory.c b/gst-libs/gst/allocators/gstfdmemory.c
+index b0044ed42..889e5e9b6 100644
+--- a/gst-libs/gst/allocators/gstfdmemory.c
++++ b/gst-libs/gst/allocators/gstfdmemory.c
+@@ -84,6 +84,8 @@ static gpointer
+ gst_fd_mem_map (GstMemory * gmem, gsize maxsize, GstMapFlags flags)
+ {
+ #ifdef HAVE_MMAP
++#define SECURE_BUFFER_SHARED_DATA_SIZE (4*1024*1024)
++
+   GstFdMemory *mem = (GstFdMemory *) gmem;
+   gint prot;
+   gpointer ret = NULL;
+@@ -114,10 +116,14 @@ gst_fd_mem_map (GstMemory * gmem, gsize maxsize, GstMapFlags flags)
+   if (mem->flags & GST_FD_MEMORY_FLAG_SECURE) {
+     /* Allocate a shared memory buffer used for metadata and used it as mapped
+      * memory. */
++    if(gmem->maxsize > SECURE_BUFFER_SHARED_DATA_SIZE){
++      GST_ERROR("cannot map %" G_GSIZE_FORMAT "bytes", maxsize);
++      goto out;
++    }
+     if(mem->shared_data == NULL) {
+-      mem->shared_data = g_malloc(gmem->maxsize);
++      mem->shared_data = g_malloc(SECURE_BUFFER_SHARED_DATA_SIZE); // TODO - Avoid hardcoded value
+       if (mem->shared_data == NULL) {
+-        GST_DEBUG("out of system memory");
++        GST_ERROR("out of system memory");
+         goto out;
+       }
+     }
+-- 
+2.17.1
+

@@ -1,0 +1,164 @@
+From f411dfac154aa2a1c0db2b7e572d3c74f29ae58e Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@linaro.org>
+Date: Thu, 9 Jan 2020 10:38:38 -0500
+Subject: [PATCH 2/4] allocators: Support secure ION buffers
+
+For implementing Secure Data Path (SDP), GstIONAllocator is modified to
+support secure ION buffer. In addition to the ION file descriptor, the
+allocator maintains a shared buffer. It has the same size of the ION buffer
+and it is accessible by the CPU. When the map API is called, this shared
+buffer is mapped. In SDP's context, the shared buffer holds the
+unencrypted content of the stream. This allows the VPU plugin to access
+the stream's metadata.
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@linaro.org>
+---
+ gst-libs/gst/allocators/gstdmabuf.c    |  8 ++++++++
+ gst-libs/gst/allocators/gstdmabuf.h    |  4 ++++
+ gst-libs/gst/allocators/gstfdmemory.c  | 25 ++++++++++++++++++++++---
+ gst-libs/gst/allocators/gstfdmemory.h  |  1 +
+ gst-libs/gst/allocators/gstionmemory.c |  7 ++++++-
+ gst-libs/gst/allocators/gstionmemory.h |  1 +
+ 6 files changed, 42 insertions(+), 4 deletions(-)
+
+diff --git a/gst-libs/gst/allocators/gstdmabuf.c b/gst-libs/gst/allocators/gstdmabuf.c
+index a9a077552..85a21a935 100644
+--- a/gst-libs/gst/allocators/gstdmabuf.c
++++ b/gst-libs/gst/allocators/gstdmabuf.c
+@@ -103,6 +103,14 @@ gst_dmabuf_allocator_alloc (GstAllocator * allocator, gint fd, gsize size)
+   return gst_fd_allocator_alloc (allocator, fd, size, GST_FD_MEMORY_FLAG_KEEP_MAPPED);
+ }
+ 
++GstMemory *
++gst_dmabuf_allocator_alloc_secure (GstAllocator * allocator, gint fd, gsize size)
++{
++  g_return_val_if_fail (GST_IS_DMABUF_ALLOCATOR (allocator), NULL);
++
++  return gst_fd_allocator_alloc (allocator, fd, size, GST_FD_MEMORY_FLAG_KEEP_MAPPED | GST_FD_MEMORY_FLAG_SECURE);
++}
++
+ /**
+  * gst_dmabuf_memory_get_fd:
+  * @mem: the memory to get the file descriptor
+diff --git a/gst-libs/gst/allocators/gstdmabuf.h b/gst-libs/gst/allocators/gstdmabuf.h
+index dd5e94fe5..01a6ab77c 100644
+--- a/gst-libs/gst/allocators/gstdmabuf.h
++++ b/gst-libs/gst/allocators/gstdmabuf.h
+@@ -104,6 +104,10 @@ GstAllocator * gst_dmabuf_allocator_new (void);
+ GST_ALLOCATORS_API
+ GstMemory    * gst_dmabuf_allocator_alloc (GstAllocator * allocator, gint fd, gsize size);
+ 
++GST_ALLOCATORS_API
++GstMemory    * gst_dmabuf_allocator_alloc_secure (GstAllocator * allocator, gint fd, gsize size);
++
++
+ GST_ALLOCATORS_API
+ gint           gst_dmabuf_memory_get_fd (GstMemory * mem);
+ 
+diff --git a/gst-libs/gst/allocators/gstfdmemory.c b/gst-libs/gst/allocators/gstfdmemory.c
+index ee2b945e6..b0044ed42 100644
+--- a/gst-libs/gst/allocators/gstfdmemory.c
++++ b/gst-libs/gst/allocators/gstfdmemory.c
+@@ -51,6 +51,7 @@ typedef struct
+   gint mmapping_flags;
+   gint mmap_count;
+   GMutex lock;
++  gpointer shared_data;
+ } GstFdMemory;
+ 
+ static void
+@@ -59,7 +60,11 @@ gst_fd_mem_free (GstAllocator * allocator, GstMemory * gmem)
+ #ifdef HAVE_MMAP
+   GstFdMemory *mem = (GstFdMemory *) gmem;
+ 
+-  if (mem->data) {
++  if (mem->flags & GST_FD_MEMORY_FLAG_SECURE) {
++    if (mem->shared_data != NULL) {
++      g_free(mem->shared_data);
++    }
++  } else if (mem->data) {
+     if (!(mem->flags & GST_FD_MEMORY_FLAG_KEEP_MAPPED))
+       g_warning (G_STRLOC ":%s: Freeing memory %p still mapped", G_STRFUNC,
+           mem);
+@@ -106,7 +111,19 @@ gst_fd_mem_map (GstMemory * gmem, gsize maxsize, GstMapFlags flags)
+     }
+   }
+ 
+-  if (mem->fd != -1) {
++  if (mem->flags & GST_FD_MEMORY_FLAG_SECURE) {
++    /* Allocate a shared memory buffer used for metadata and used it as mapped
++     * memory. */
++    if(mem->shared_data == NULL) {
++      mem->shared_data = g_malloc(gmem->maxsize);
++      if (mem->shared_data == NULL) {
++        GST_DEBUG("out of system memory");
++        goto out;
++      }
++    }
++    mem->data = mem->shared_data;
++    prot = PROT_READ | PROT_WRITE;
++  } else if (mem->fd != -1) {
+     gint flags;
+ 
+     flags =
+@@ -163,7 +180,9 @@ gst_fd_mem_unmap (GstMemory * gmem)
+ 
+   g_mutex_lock (&mem->lock);
+   if (mem->data && !(--mem->mmap_count)) {
+-    munmap ((void *) mem->data, gmem->maxsize);
++    if ((mem->flags & GST_FD_MEMORY_FLAG_SECURE) == 0) {
++      munmap ((void *) mem->data, gmem->maxsize);
++    }
+     mem->data = NULL;
+     mem->mmapping_flags = 0;
+     GST_DEBUG ("%p: fd %d unmapped", mem, mem->fd);
+diff --git a/gst-libs/gst/allocators/gstfdmemory.h b/gst-libs/gst/allocators/gstfdmemory.h
+index 6693593b0..4bd78f83c 100644
+--- a/gst-libs/gst/allocators/gstfdmemory.h
++++ b/gst-libs/gst/allocators/gstfdmemory.h
+@@ -58,6 +58,7 @@ typedef enum {
+   GST_FD_MEMORY_FLAG_KEEP_MAPPED = (1 << 0),
+   GST_FD_MEMORY_FLAG_MAP_PRIVATE = (1 << 1),
+   GST_FD_MEMORY_FLAG_DONT_CLOSE  = (1 << 2),
++  GST_FD_MEMORY_FLAG_SECURE      = (1 << 3), /* Secure memory with attached shared memory for metadata */
+ } GstFdMemoryFlags;
+ 
+ /**
+diff --git a/gst-libs/gst/allocators/gstionmemory.c b/gst-libs/gst/allocators/gstionmemory.c
+index 89daec227..4ca910b91 100644
+--- a/gst-libs/gst/allocators/gstionmemory.c
++++ b/gst-libs/gst/allocators/gstionmemory.c
+@@ -327,7 +327,11 @@ gst_ion_alloc_alloc (GstAllocator * allocator, gsize size,
+   dma_fd = data.fd;
+ #endif
+ 
+-  mem = gst_dmabuf_allocator_alloc (allocator, dma_fd, size);
++  if (self->is_secure) {
++    mem = gst_dmabuf_allocator_alloc_secure (allocator, dma_fd, size);
++  } else {
++    mem = gst_dmabuf_allocator_alloc (allocator, dma_fd, size);
++  }
+ 
+   GST_DEBUG ("ion allocated size: %" G_GSIZE_FORMAT "DMA FD: %d", ion_size,
+       dma_fd);
+@@ -433,4 +437,5 @@ gst_ion_allocator_init (GstIONAllocator * self)
+ 
+   self->heap_id = DEFAULT_HEAP_ID;
+   self->flags = DEFAULT_FLAG;
++  self->is_secure = FALSE;
+ }
+diff --git a/gst-libs/gst/allocators/gstionmemory.h b/gst-libs/gst/allocators/gstionmemory.h
+index 75c329624..719bb15da 100644
+--- a/gst-libs/gst/allocators/gstionmemory.h
++++ b/gst-libs/gst/allocators/gstionmemory.h
+@@ -54,6 +54,7 @@ struct _GstIONAllocator
+   gint fd;
+   guint heap_id;
+   guint flags;
++  gboolean is_secure;
+ };
+ 
+ struct _GstIONAllocatorClass
+-- 
+2.17.1
+
