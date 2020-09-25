@@ -1,0 +1,190 @@
+From 51090f8aa50347c501dc57ab8b251837030bf606 Mon Sep 17 00:00:00 2001
+From: Ye Li <ye.li@nxp.com>
+Date: Fri, 6 Sep 2019 01:21:00 -0700
+Subject: [PATCH 02/10] MLK-22622 imx8m: Add Workaround for ROM SError issue
+
+ROM SError happens on two cases:
+
+1. ERR050342, on iMX8MQ HDCP enabled parts ROM writes to GPV1 register, but
+when ROM patch lock is fused, this write will cause SError.
+
+2. ERR050350, on iMX8MQ/MM/MN, when the field return fuse is burned, HAB
+is field return mode, but the last 4K of ROM is still protected and cause SError.
+
+Since ROM mask SError until ATF unmask it, so then ATF always meets the exception.
+This patch works around the issue in SPL by enabling the SError exception and
+take it to eret immediately to clear the SError.
+
+Signed-off-by: Ye Li <ye.li@nxp.com>
+Reviewed-by: Peng Fan <peng.fan@nxp.com>
+(cherry picked from commit f05dd45251ca82cc54e13a616f00744c26faab53)
+---
+ arch/arm/mach-imx/Makefile    |  2 +-
+ arch/arm/mach-imx/imx8m/soc.c | 93 +++++++++++++++++++++++++++++++++++
+ arch/arm/mach-imx/lowlevel.S  | 33 +++++++++++++
+ 3 files changed, 127 insertions(+), 1 deletion(-)
+ create mode 100644 arch/arm/mach-imx/lowlevel.S
+
+diff --git a/arch/arm/mach-imx/Makefile b/arch/arm/mach-imx/Makefile
+index e56bd92bbd..1d13812b8a 100644
+--- a/arch/arm/mach-imx/Makefile
++++ b/arch/arm/mach-imx/Makefile
+@@ -190,7 +190,7 @@ spl/u-boot-nand-spl.imx: SPL FORCE
+ 
+ targets += $(addprefix ../../../,$(IMX_CONFIG) SPL u-boot.uim spl/u-boot-nand-spl.imx)
+ 
+-obj-$(CONFIG_ARM64) += sip.o
++obj-$(CONFIG_ARM64) += lowlevel.o sip.o
+ 
+ obj-$(CONFIG_MX5) += mx5/
+ obj-$(CONFIG_MX6) += mx6/
+diff --git a/arch/arm/mach-imx/imx8m/soc.c b/arch/arm/mach-imx/imx8m/soc.c
+index ab138f3ed9..4e6b436a90 100644
+--- a/arch/arm/mach-imx/imx8m/soc.c
++++ b/arch/arm/mach-imx/imx8m/soc.c
+@@ -26,6 +26,8 @@
+ #include <fsl_caam.h>
+ #endif
+ 
++#include <efi_loader.h>
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #if defined(CONFIG_SECURE_BOOT) || defined(CONFIG_AVB_ATX)
+@@ -903,3 +905,94 @@ void nxp_tmu_arch_init(void *reg_base)
+ 		writel((tca_en << 31) |(tca_hr <<16) | tca_rt,  (ulong)reg_base + 0x30);
+ 	}
+ }
++
++#if defined(CONFIG_SPL_BUILD)
++#if defined(CONFIG_IMX8MQ) || defined(CONFIG_IMX8MM) || defined(CONFIG_IMX8MN)
++bool serror_need_skip = true;
++void do_error(struct pt_regs *pt_regs, unsigned int esr)
++{
++	/* If stack is still in ROM reserved OCRAM not switch to SPL, it is the ROM SError */
++	ulong sp;
++	asm volatile("mov %0, sp" : "=r"(sp) : );
++
++	if (serror_need_skip &&
++		sp < 0x910000 && sp >= 0x900000) {
++
++		/* Check for ERR050342, imx8mq HDCP enabled parts */
++		if (is_imx8mq() && !(readl(OCOTP_BASE_ADDR + 0x450) & 0x08000000)) {
++			serror_need_skip = false;
++			return; /* Do nothing skip the SError in ROM */
++		}
++
++		/* Check for ERR050350, field return mode for imx8mq, mm and mn */
++		if (readl(OCOTP_BASE_ADDR + 0x630) & 0x1) {
++			serror_need_skip = false;
++			return; /* Do nothing skip the SError in ROM */
++		}
++	}
++
++	efi_restore_gd();
++	printf("\"Error\" handler, esr 0x%08x\n", esr);
++	show_regs(pt_regs);
++	panic("Resetting CPU ...\n");
++
++}
++#endif
++#endif
++
++#if defined(CONFIG_IMX8MN)
++enum env_location env_get_location(enum env_operation op, int prio)
++{
++	enum boot_device dev = get_boot_device();
++	enum env_location env_loc = ENVL_UNKNOWN;
++
++	if (prio)
++		return env_loc;
++
++	switch (dev) {
++#ifdef CONFIG_ENV_IS_IN_SPI_FLASH
++	case QSPI_BOOT:
++		env_loc = ENVL_SPI_FLASH;
++		break;
++#endif
++#ifdef CONFIG_ENV_IS_IN_NAND
++	case NAND_BOOT:
++		env_loc = ENVL_NAND;
++		break;
++#endif
++#ifdef CONFIG_ENV_IS_IN_MMC
++	case SD1_BOOT:
++	case SD2_BOOT:
++	case SD3_BOOT:
++	case MMC1_BOOT:
++	case MMC2_BOOT:
++	case MMC3_BOOT:
++		env_loc =  ENVL_MMC;
++		break;
++#endif
++	default:
++#ifdef CONFIG_ENV_DEFAULT_NOWHERE
++		env_loc = ENVL_NOWHERE;
++#endif
++		break;
++	}
++
++	return env_loc;
++}
++
++#ifndef ENV_IS_EMBEDDED
++long long env_get_offset(long long defautl_offset)
++{
++	enum boot_device dev = get_boot_device();
++
++	switch (dev) {
++	case NAND_BOOT:
++		return (60 << 20);  /* 60MB offset for NAND */
++	default:
++		break;
++	}
++
++	return defautl_offset;
++}
++#endif
++#endif
+diff --git a/arch/arm/mach-imx/lowlevel.S b/arch/arm/mach-imx/lowlevel.S
+new file mode 100644
+index 0000000000..2cb2d056a9
+--- /dev/null
++++ b/arch/arm/mach-imx/lowlevel.S
+@@ -0,0 +1,33 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright 2019 NXP
++ */
++
++#include <linux/linkage.h>
++
++ENTRY(lowlevel_init)
++#ifdef CONFIG_SPL_BUILD
++	mrs	x0, CurrentEL
++	cmp	x0, #12
++	b.eq	1f
++	ret
++1:
++	msr daifclr, #4
++	isb
++	ret
++#else
++	mrs	x0, CurrentEL
++	cmp	x0, #8
++	b.eq	1f
++	ret
++1:
++	msr daifclr, #4
++
++	/* set HCR_EL2.AMO to catch SERROR */
++	mrs	x0, hcr_el2
++	orr	x0, x0, #0x20
++	msr	hcr_el2, x0
++	isb
++	ret
++#endif
++ENDPROC(lowlevel_init)
+-- 
+2.17.1
+

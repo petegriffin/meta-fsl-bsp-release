@@ -1,0 +1,632 @@
+From 994b7cbe2657b34bb46dd97437722593f39a0889 Mon Sep 17 00:00:00 2001
+From: Jens Wiklander <jens.wiklander@linaro.org>
+Date: Tue, 25 Sep 2018 16:40:09 +0200
+Subject: [PATCH 05/10] Add UCLASS_TEE for Trusted Execution Environment
+
+Adds a uclass to interface with a TEE (Trusted Execution Environment).
+
+A TEE driver is a driver that interfaces with a trusted OS running in
+some secure environment, for example, TrustZone on ARM cpus, or a
+separate secure co-processor etc.
+
+The TEE subsystem can serve a TEE driver for a Global Platform compliant
+TEE, but it's not limited to only Global Platform TEEs.
+
+The over all design is based on the TEE subsystem in the Linux kernel,
+tailored for U-Boot.
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Tested-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Signed-off-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ MAINTAINERS              |   6 +
+ drivers/Kconfig          |   2 +
+ drivers/tee/tee-uclass.c | 209 ++++++++++++++++++++++++
+ include/dm/uclass-id.h   |   1 +
+ include/tee.h            | 336 +++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 554 insertions(+)
+ create mode 100644 drivers/tee/tee-uclass.c
+ create mode 100644 include/tee.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index d5059f611d..6a72cc28ca 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -492,6 +492,12 @@ TQ GROUP
+ S:	Orphaned (Since 2016-02)
+ T:	git git://git.denx.de/u-boot-tq-group.git
+ 
++TEE
++M:	Jens Wiklander <jens.wiklander@linaro.org>
++S:	Maintained
++F:	drivers/tee/
++F:	include/tee.h
++
+ UBI
+ M:	Kyungmin Park <kmpark@infradead.org>
+ M:	Heiko Schocher <hs@denx.de>
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+index 95459516f1..be33cd1dd0 100644
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -90,6 +90,8 @@ source "drivers/spmi/Kconfig"
+ 
+ source "drivers/sysreset/Kconfig"
+ 
++source "drivers/tee/Kconfig"
++
+ source "drivers/thermal/Kconfig"
+ 
+ source "drivers/timer/Kconfig"
+diff --git a/drivers/tee/tee-uclass.c b/drivers/tee/tee-uclass.c
+new file mode 100644
+index 0000000000..1bee54ebf4
+--- /dev/null
++++ b/drivers/tee/tee-uclass.c
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (c) 2018 Linaro Limited
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <dm/device-internal.h>
++#include <dm/uclass-internal.h>
++#include <tee.h>
++
++/**
++ * struct tee_uclass_priv - information of a TEE, stored by the uclass
++ *
++ * @list_shm:	list of structe tee_shm representing memory blocks shared
++ *		with the TEE.
++ */
++struct tee_uclass_priv {
++	struct list_head list_shm;
++};
++
++static const struct tee_driver_ops *tee_get_ops(struct udevice *dev)
++{
++	return device_get_ops(dev);
++}
++
++void tee_get_version(struct udevice *dev, struct tee_version_data *vers)
++{
++	tee_get_ops(dev)->get_version(dev, vers);
++}
++
++int tee_open_session(struct udevice *dev, struct tee_open_session_arg *arg,
++		     uint num_param, struct tee_param *param)
++{
++	return tee_get_ops(dev)->open_session(dev, arg, num_param, param);
++}
++
++int tee_close_session(struct udevice *dev, u32 session)
++{
++	return tee_get_ops(dev)->close_session(dev, session);
++}
++
++int tee_invoke_func(struct udevice *dev, struct tee_invoke_arg *arg,
++		    uint num_param, struct tee_param *param)
++{
++	return tee_get_ops(dev)->invoke_func(dev, arg, num_param, param);
++}
++
++int __tee_shm_add(struct udevice *dev, ulong align, void *addr, ulong size,
++		  u32 flags, struct tee_shm **shmp)
++{
++	struct tee_shm *shm;
++	void *p = addr;
++	int rc;
++
++	if (flags & TEE_SHM_ALLOC) {
++		if (align)
++			p = memalign(align, size);
++		else
++			p = malloc(size);
++	}
++	if (!p)
++		return -ENOMEM;
++
++	shm = calloc(1, sizeof(*shm));
++	if (!shm) {
++		rc = -ENOMEM;
++		goto err;
++	}
++
++	shm->dev = dev;
++	shm->addr = p;
++	shm->size = size;
++	shm->flags = flags;
++
++	if (flags & TEE_SHM_SEC_REGISTER) {
++		rc = tee_get_ops(dev)->shm_register(dev, shm);
++		if (rc)
++			goto err;
++	}
++
++	if (flags & TEE_SHM_REGISTER) {
++		struct tee_uclass_priv *priv = dev_get_uclass_priv(dev);
++
++		list_add(&shm->link, &priv->list_shm);
++	}
++
++	*shmp = shm;
++
++	return 0;
++err:
++	free(shm);
++	if (flags & TEE_SHM_ALLOC)
++		free(p);
++
++	return rc;
++}
++
++int tee_shm_alloc(struct udevice *dev, ulong size, u32 flags,
++		  struct tee_shm **shmp)
++{
++	u32 f = flags;
++
++	f |= TEE_SHM_SEC_REGISTER | TEE_SHM_REGISTER | TEE_SHM_ALLOC;
++
++	return __tee_shm_add(dev, 0, NULL, size, f, shmp);
++}
++
++int tee_shm_register(struct udevice *dev, void *addr, ulong size, u32 flags,
++		     struct tee_shm **shmp)
++{
++	u32 f = flags & ~TEE_SHM_ALLOC;
++
++	f |= TEE_SHM_SEC_REGISTER | TEE_SHM_REGISTER;
++
++	return __tee_shm_add(dev, 0, addr, size, f, shmp);
++}
++
++void tee_shm_free(struct tee_shm *shm)
++{
++	if (!shm)
++		return;
++
++	if (shm->flags & TEE_SHM_SEC_REGISTER)
++		tee_get_ops(shm->dev)->shm_unregister(shm->dev, shm);
++
++	if (shm->flags & TEE_SHM_REGISTER)
++		list_del(&shm->link);
++
++	if (shm->flags & TEE_SHM_ALLOC)
++		free(shm->addr);
++
++	free(shm);
++}
++
++bool tee_shm_is_registered(struct tee_shm *shm, struct udevice *dev)
++{
++	struct tee_uclass_priv *priv = dev_get_uclass_priv(dev);
++	struct tee_shm *s;
++
++	list_for_each_entry(s, &priv->list_shm, link)
++		if (s == shm)
++			return true;
++
++	return false;
++}
++
++struct udevice *tee_find_device(struct udevice *start,
++				int (*match)(struct tee_version_data *vers,
++					     const void *data),
++				const void *data,
++				struct tee_version_data *vers)
++{
++	struct udevice *dev = start;
++	struct tee_version_data lv;
++	struct tee_version_data *v = vers ? vers : &lv;
++
++	if (!dev)
++		uclass_find_first_device(UCLASS_TEE, &dev);
++	else
++		uclass_find_next_device(&dev);
++
++	for (; dev; uclass_find_next_device(&dev)) {
++		if (device_probe(dev))
++			continue;
++		tee_get_ops(dev)->get_version(dev, v);
++		if (!match || match(v, data))
++			return dev;
++	}
++
++	return NULL;
++}
++
++static int tee_pre_probe(struct udevice *dev)
++{
++	struct tee_uclass_priv *priv = dev_get_uclass_priv(dev);
++
++	INIT_LIST_HEAD(&priv->list_shm);
++
++	return 0;
++}
++
++static int tee_pre_remove(struct udevice *dev)
++{
++	struct tee_uclass_priv *priv = dev_get_uclass_priv(dev);
++	struct tee_shm *shm;
++
++	/*
++	 * Any remaining shared memory must be unregistered now as U-Boot
++	 * is about to hand over to the next stage and that memory will be
++	 * reused.
++	 */
++	while (!list_empty(&priv->list_shm)) {
++		shm = list_first_entry(&priv->list_shm, struct tee_shm, link);
++		debug("%s: freeing leftover shm %p (size %lu, flags %#x)\n",
++		      __func__, (void *)shm, shm->size, shm->flags);
++		tee_shm_free(shm);
++	}
++
++	return 0;
++}
++
++UCLASS_DRIVER(tee) = {
++	.id = UCLASS_TEE,
++	.name = "tee",
++	.per_device_auto_alloc_size = sizeof(struct tee_uclass_priv),
++	.pre_probe = tee_pre_probe,
++	.pre_remove = tee_pre_remove,
++};
+diff --git a/include/dm/uclass-id.h b/include/dm/uclass-id.h
+index d28fb3e23f..bc423f0ac5 100644
+--- a/include/dm/uclass-id.h
++++ b/include/dm/uclass-id.h
+@@ -81,6 +81,7 @@ enum uclass_id {
+ 	UCLASS_SPI_GENERIC,	/* Generic SPI flash target */
+ 	UCLASS_SYSCON,		/* System configuration device */
+ 	UCLASS_SYSRESET,	/* System reset device */
++	UCLASS_TEE,		/* Trusted Execution Environment device */
+ 	UCLASS_THERMAL,		/* Thermal sensor */
+ 	UCLASS_TIMER,		/* Timer device */
+ 	UCLASS_TPM,		/* Trusted Platform Module TIS interface */
+diff --git a/include/tee.h b/include/tee.h
+new file mode 100644
+index 0000000000..b86dbec257
+--- /dev/null
++++ b/include/tee.h
+@@ -0,0 +1,336 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (c) 2018 Linaro Limited
++ */
++
++#ifndef __TEE_H
++#define __TEE_H
++
++#define TEE_UUID_LEN		16
++
++#define TEE_GEN_CAP_GP          BIT(0)	/* GlobalPlatform compliant TEE */
++#define TEE_GEN_CAP_REG_MEM     BIT(1)	/* Supports registering shared memory */
++
++#define TEE_SHM_REGISTER	BIT(0)	/* In list of shared memory */
++#define TEE_SHM_SEC_REGISTER	BIT(1)	/* TEE notified of this memory */
++#define TEE_SHM_ALLOC		BIT(2)	/* The memory is malloced() and must */
++					/* be freed() */
++
++#define TEE_PARAM_ATTR_TYPE_NONE		0	/* parameter not used */
++#define TEE_PARAM_ATTR_TYPE_VALUE_INPUT		1
++#define TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT	2
++#define TEE_PARAM_ATTR_TYPE_VALUE_INOUT		3	/* input and output */
++#define TEE_PARAM_ATTR_TYPE_MEMREF_INPUT	5
++#define TEE_PARAM_ATTR_TYPE_MEMREF_OUTPUT	6
++#define TEE_PARAM_ATTR_TYPE_MEMREF_INOUT	7	/* input and output */
++#define TEE_PARAM_ATTR_TYPE_MASK		0xff
++#define TEE_PARAM_ATTR_META			0x100
++#define TEE_PARAM_ATTR_MASK			(TEE_PARAM_ATTR_TYPE_MASK | \
++						 TEE_PARAM_ATTR_META)
++
++/*
++ * Some Global Platform error codes which has a meaning if the
++ * TEE_GEN_CAP_GP bit is returned by the driver in
++ * struct tee_version_data::gen_caps
++ */
++#define TEE_SUCCESS			0x00000000
++#define TEE_ERROR_GENERIC		0xffff0000
++#define TEE_ERROR_BAD_PARAMETERS	0xffff0006
++#define TEE_ERROR_ITEM_NOT_FOUND	0xffff0008
++#define TEE_ERROR_NOT_IMPLEMENTED	0xffff0009
++#define TEE_ERROR_NOT_SUPPORTED		0xffff000a
++#define TEE_ERROR_COMMUNICATION		0xffff000e
++#define TEE_ERROR_SECURITY		0xffff000f
++#define TEE_ERROR_OUT_OF_MEMORY		0xffff000c
++#define TEE_ERROR_TARGET_DEAD		0xffff3024
++
++#define TEE_ORIGIN_COMMS		0x00000002
++#define TEE_ORIGIN_TEE			0x00000003
++#define TEE_ORIGIN_TRUSTED_APP		0x00000004
++
++struct udevice;
++/**
++ * struct tee_shm - memory shared with the TEE
++ * @dev:	The TEE device
++ * @link:	List node in the list in struct struct tee_uclass_priv
++ * @addr:	Pointer to the shared memory
++ * @size:	Size of the the shared memory
++ * @flags:	TEE_SHM_* above
++ */
++struct tee_shm {
++	struct udevice *dev;
++	struct list_head link;
++	void *addr;
++	ulong size;
++	u32 flags;
++};
++
++/**
++ * struct tee_param_memref - memory reference for a Trusted Application
++ * @shm_offs:	Offset in bytes into the shared memory object @shm
++ * @size:	Size in bytes of the memory reference
++ * @shm:	Pointer to a shared memory object for the buffer
++ *
++ * Used as a part of struct tee_param, see that for more information.
++ */
++struct tee_param_memref {
++	ulong shm_offs;
++	ulong size;
++	struct tee_shm *shm;
++};
++
++/**
++ * struct tee_param_value - value parameter for a Trusted Application
++ * @a, @b, @c:	Parameters passed by value
++ *
++ * Used as a part of struct tee_param, see that for more information.
++ */
++struct tee_param_value {
++	u64 a;
++	u64 b;
++	u64 c;
++};
++
++/**
++ * struct tee_param - invoke parameter for a Trusted Application
++ * @attr:	Attributes
++ * @u.memref:	Memref parameter if (@attr & TEE_PARAM_ATTR_MASK) is one of
++ *		TEE_PARAM_ATTR_TYPE_MEMREF_* above
++ * @u.value:	Value parameter if (@attr & TEE_PARAM_ATTR_MASK) is one of
++ *		TEE_PARAM_ATTR_TYPE_VALUE_* above
++ *
++ * Parameters to TA are passed using an array of this struct, for
++ * flexibility both value parameters and memory refereces can be used.
++ */
++struct tee_param {
++	u64 attr;
++	union {
++		struct tee_param_memref memref;
++		struct tee_param_value value;
++	} u;
++};
++
++/**
++ * struct tee_open_session_arg - extra arguments for tee_open_session()
++ * @uuid:	[in] UUID of the Trusted Application
++ * @clnt_uuid:	[in] Normally zeroes
++ * @clnt_login:	[in] Normally 0
++ * @session:	[out] Session id
++ * @ret:	[out] return value
++ * @ret_origin:	[out] origin of the return value
++ */
++struct tee_open_session_arg {
++	u8 uuid[TEE_UUID_LEN];
++	u8 clnt_uuid[TEE_UUID_LEN];
++	u32 clnt_login;
++	u32 session;
++	u32 ret;
++	u32 ret_origin;
++};
++
++/**
++ * struct tee_invoke_arg - extra arguments for tee_invoke_func()
++ * @func:	[in] Trusted Application function, specific to the TA
++ * @session:	[in] Session id, from open session
++ * @ret:	[out] return value
++ * @ret_origin:	[out] origin of the return value
++ */
++struct tee_invoke_arg {
++	u32 func;
++	u32 session;
++	u32 ret;
++	u32 ret_origin;
++};
++
++/**
++ * struct tee_version_data - description of TEE
++ * @gen_caps:	Generic capabilities, TEE_GEN_CAP_* above
++ */
++struct tee_version_data {
++	u32 gen_caps;
++};
++
++/**
++ * struct tee_driver_ops - TEE driver operations
++ * @get_version:	Query capabilities of TEE device,
++ * @open_session:	Opens a session to a Trusted Application in the TEE,
++ * @close_session:	Closes a session to Trusted Application,
++ * @invoke_func:	Invokes a function in a Trusted Application,
++ * @shm_register:	Registers memory shared with the TEE
++ * @shm_unregister:	Unregisters memory shared with the TEE
++ */
++struct tee_driver_ops {
++	/**
++	 * get_version() - Query capabilities of TEE device
++	 * @dev:	The TEE device
++	 * @vers:	Pointer to version data
++	 */
++	void (*get_version)(struct udevice *dev, struct tee_version_data *vers);
++	/**
++	 * open_session() - Open a session to a Trusted Application
++	 * @dev:	The TEE device
++	 * @arg:	Open session arguments
++	 * @num_param:	Number of elements in @param
++	 * @param:	Parameters for Trusted Application
++	 *
++	 * Returns < 0 on error else see @arg->ret for result. If @arg->ret is
++	 * TEE_SUCCESS the session identifier is available in @arg->session.
++	 */
++	int (*open_session)(struct udevice *dev,
++			    struct tee_open_session_arg *arg, uint num_param,
++			    struct tee_param *param);
++	/**
++	 * close_session() - Close a session to a Trusted Application
++	 * @dev:	The TEE device
++	 * @session:	Session id
++	 *
++	 * Return < 0 on error else 0, regardless the session will not be valid
++	 * after this function has returned.
++	 */
++	int (*close_session)(struct udevice *dev, u32 session);
++	/**
++	 * tee_invoke_func() - Invoke a function in a Trusted Application
++	 * @dev:	The TEE device
++	 * @arg:	Invoke arguments
++	 * @num_param:	Number of elements in @param
++	 * @param:	Parameters for Trusted Application
++	 *
++	 * Returns < 0 on error else see @arg->ret for result.
++	 */
++	int (*invoke_func)(struct udevice *dev, struct tee_invoke_arg *arg,
++			   uint num_param, struct tee_param *param);
++	/**
++	 * shm_register() - Registers memory shared with the TEE
++	 * @dev:	The TEE device
++	 * @shm:	Pointer to a shared memory object
++	 * Returns 0 on success or < 0 on failure.
++	 */
++	int (*shm_register)(struct udevice *dev, struct tee_shm *shm);
++	/**
++	 * shm_unregister() - Unregisters memory shared with the TEE
++	 * @dev:	The TEE device
++	 * @shm:	Pointer to a shared memory object
++	 * Returns 0 on success or < 0 on failure.
++	 */
++	int (*shm_unregister)(struct udevice *dev, struct tee_shm *shm);
++};
++
++/**
++ * __tee_shm_add() - Internal helper function to register shared memory
++ * @dev:	The TEE device
++ * @align:	Required alignment of allocated memory block if
++ *		(@flags & TEE_SHM_ALLOC)
++ * @addr:	Address of memory block, ignored if (@flags & TEE_SHM_ALLOC)
++ * @size:	Size of memory block
++ * @flags:	TEE_SHM_* above
++ * @shmp:	If the function return 0, this holds the allocated
++ *		struct tee_shm
++ *
++ * returns 0 on success or < 0 on failure.
++ */
++int __tee_shm_add(struct udevice *dev, ulong align, void *addr, ulong size,
++		  u32 flags, struct tee_shm **shmp);
++
++/**
++ * tee_shm_alloc() - Allocate shared memory
++ * @dev:	The TEE device
++ * @size:	Size of memory block
++ * @flags:	TEE_SHM_* above
++ * @shmp:	If the function return 0, this holds the allocated
++ *		struct tee_shm
++ *
++ * returns 0 on success or < 0 on failure.
++ */
++int tee_shm_alloc(struct udevice *dev, ulong size, u32 flags,
++		  struct tee_shm **shmp);
++
++/**
++ * tee_shm_register() - Registers shared memory
++ * @dev:	The TEE device
++ * @addr:	Address of memory block
++ * @size:	Size of memory block
++ * @flags:	TEE_SHM_* above
++ * @shmp:	If the function return 0, this holds the allocated
++ *		struct tee_shm
++ *
++ * returns 0 on success or < 0 on failure.
++ */
++int tee_shm_register(struct udevice *dev, void *addr, ulong size, u32 flags,
++		     struct tee_shm **shmp);
++
++/**
++ * tee_shm_free() - Frees shared memory
++ * @shm:	Shared memory object
++ */
++void tee_shm_free(struct tee_shm *shm);
++
++/**
++ * tee_shm_is_registered() - Check register status of shared memory object
++ * @shm:	Pointer to shared memory object
++ * @dev:	The TEE device
++ *
++ * Returns true if the shared memory object is registered for the supplied
++ * TEE device
++ */
++bool tee_shm_is_registered(struct tee_shm *shm, struct udevice *dev);
++
++/**
++ * tee_find_device() - Look up a TEE device
++ * @start:	if not NULL, continue search after this device
++ * @match:	function to check TEE device, returns != 0 if the device
++ *		matches
++ * @data:	data for match function
++ * @vers:	if not NULL, version data of TEE device of the device returned
++ *
++ * Returns a probed TEE device of the first TEE device matched by the
++ * match() callback or NULL.
++ */
++struct udevice *tee_find_device(struct udevice *start,
++				int (*match)(struct tee_version_data *vers,
++					     const void *data),
++				const void *data,
++				struct tee_version_data *vers);
++
++/**
++ * tee_get_version() - Query capabilities of TEE device
++ * @dev:	The TEE device
++ * @vers:	Pointer to version data
++ */
++void tee_get_version(struct udevice *dev, struct tee_version_data *vers);
++
++/**
++ * tee_open_session() - Open a session to a Trusted Application
++ * @dev:	The TEE device
++ * @arg:	Open session arguments
++ * @num_param:	Number of elements in @param
++ * @param:	Parameters for Trusted Application
++ *
++ * Returns < 0 on error else see @arg->ret for result. If @arg->ret is
++ * TEE_SUCCESS the session identifier is available in @arg->session.
++ */
++int tee_open_session(struct udevice *dev, struct tee_open_session_arg *arg,
++		     uint num_param, struct tee_param *param);
++
++/**
++ * tee_close_session() - Close a session to a Trusted Application
++ * @dev:	The TEE device
++ * @session:	Session id
++ *
++ * Return < 0 on error else 0, regardless the session will not be valid
++ * after this function has returned.
++ */
++int tee_close_session(struct udevice *dev, u32 session);
++
++/**
++ * tee_invoke_func() - Invoke a function in a Trusted Application
++ * @dev:	The TEE device
++ * @arg:	Invoke arguments
++ * @num_param:	Number of elements in @param
++ * @param:	Parameters for Trusted Application
++ *
++ * Returns < 0 on error else see @arg->ret for result.
++ */
++int tee_invoke_func(struct udevice *dev, struct tee_invoke_arg *arg,
++		    uint num_param, struct tee_param *param);
++
++#endif /* __TEE_H */
+-- 
+2.17.1
+

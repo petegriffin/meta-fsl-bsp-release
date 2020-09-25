@@ -1,0 +1,36 @@
+From d5b0adecbff571006a172c1ac3e9c705ca92728e Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Wed, 1 Jul 2020 18:10:47 +0200
+Subject: [PATCH 04/10] Enable OPTEE driver
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ configs/imx8mq_evk_defconfig | 2 ++
+ drivers/Makefile             | 2 +-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/configs/imx8mq_evk_defconfig b/configs/imx8mq_evk_defconfig
+index 372ab57094..a1a2bb4d0e 100644
+--- a/configs/imx8mq_evk_defconfig
++++ b/configs/imx8mq_evk_defconfig
+@@ -71,3 +71,5 @@ CONFIG_USB_XHCI_IMX8M=y
+ CONFIG_USB_XHCI_DWC3=y
+ CONFIG_USB_DWC3=y
+ CONFIG_USB_DWC3_GADGET=y
++CONFIG_TEE=y
++CONFIG_OPTEE=y
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 6b52d3c671..c6ce60d152 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -100,6 +100,6 @@ obj-y += input/
+ obj-y += soc/
+ obj-$(CONFIG_REMOTEPROC) += remoteproc/
+ obj-y += thermal/
+-
++obj-$(CONFIG_TEE) += tee/
+ obj-$(CONFIG_MACH_PIC32) += ddr/microchip/
+ endif
+-- 
+2.17.1
+

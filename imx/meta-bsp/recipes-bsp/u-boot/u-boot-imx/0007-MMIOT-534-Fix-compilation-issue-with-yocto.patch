@@ -1,0 +1,28 @@
+From 68bcd366506cee82a3380fa15fb8dbf78f7efb94 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Tue, 7 Jul 2020 11:34:30 +0200
+Subject: [PATCH 07/10] MMIOT-534: Fix compilation issue with yocto
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ drivers/tee/optee/optee_private.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/tee/optee/optee_private.h b/drivers/tee/optee/optee_private.h
+index 35adb83afc..0101601326 100644
+--- a/drivers/tee/optee/optee_private.h
++++ b/drivers/tee/optee/optee_private.h
+@@ -6,7 +6,9 @@
+ #ifndef __OPTEE_PRIVATE_H
+ #define __OPTEE_PRIVATE_H
+ 
++#include <tee.h>
++
+ void *optee_alloc_and_init_page_list(void *buf, ulong len, u64 *phys_buf_ptr);
+-void optee_suppl_cmd(struct udevice *dev, void *shm, void **page_list);
++void optee_suppl_cmd(struct udevice *dev, struct tee_shm *shm, void **page_list);
+ 
+ #endif /* __OPTEE_PRIVATE_H */
+-- 
+2.17.1
+

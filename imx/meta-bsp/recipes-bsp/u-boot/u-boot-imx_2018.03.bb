@@ -14,7 +14,17 @@ LIC_FILES_CHKSUM = "file://Licenses/gpl-2.0.txt;md5=b234ee4d69f5fce4486a80fdaf4a
 UBOOT_SRC ?= "git://source.codeaurora.org/external/imx/uboot-imx.git;protocol=https"
 SRCBRANCH = "imx_v2018.03_4.14.98_2.1.0"
 SRC_URI = "${UBOOT_SRC};branch=${SRCBRANCH}"
-#DRM_PATCH
+
+SRC_URI += "file://0001-Use-a-customize-device-tree-configuration-for-DRM.patch;md5sum=20e75b9224a9b1d7540e28156075e7f6" 
+SRC_URI += "file://0002-MLK-22622-imx8m-Add-Workaround-for-ROM-SError-issue.patch;md5sum=2a6026216a5047e83f5cfc319914853d" 
+SRC_URI += "file://0003-tee-add-OP-TEE-driver.patch;md5sum=893cd5c784146a9ee6ec6d7b1a06743c" 
+SRC_URI += "file://0004-Enable-OPTEE-driver.patch;md5sum=a70fdaf749e5bed308f586b5f542c3cb" 
+SRC_URI += "file://0005-Add-UCLASS_TEE-for-Trusted-Execution-Environment.patch;md5sum=3c53f7d2025c5c0fdb8c0a46b18cfdd6" 
+SRC_URI += "file://0006-firmware-psci-introduce-SPL_ARM_PSCI_FW.patch;md5sum=c84fc6c01fca908ddca46c84825fd695" 
+SRC_URI += "file://0007-MMIOT-534-Fix-compilation-issue-with-yocto.patch;md5sum=ca2e5d51f170babde6f1d0b363c85e53" 
+SRC_URI += "file://0008-tee-optee-support-AVB-trusted-application.patch;md5sum=ffbd7a39239825c3d386a4416eee972b" 
+SRC_URI += "file://0009-tee-change-return-code-for-REE-FS-supplicant-cmd.patch;md5sum=19ff8417f590cdaa03a759012f125491" 
+SRC_URI += "file://0010-MMIOT-117-Add-support-of-secure-HDCP-control-for-OPT.patch;md5sum=1f6394bee8571d0dde44858760d22b04" 
 SRCREV = "b9dc0acc7a29fc56012c7c2ebfff36a7ff3320ab"
 
 S = "${WORKDIR}/git"

@@ -1,0 +1,201 @@
+From f70f84594b19e83d854f1efc69423e6981491ff4 Mon Sep 17 00:00:00 2001
+From: Jens Wiklander <jens.wiklander@linaro.org>
+Date: Tue, 25 Sep 2018 16:40:15 +0200
+Subject: [PATCH 08/10] tee: optee: support AVB trusted application
+
+Adds configuration option OPTEE_TA_AVB and a header file describing the
+interface to the Android Verified Boot 2.0 (AVB) trusted application
+provided by OP-TEE.
+
+Tested-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Reviewed-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Signed-off-by: Jens Wiklander <jens.wiklander@linaro.org>
+Reviewed-by: Simon Glass <sjg@chromium.org>
+---
+ MAINTAINERS                |  1 +
+ drivers/tee/optee/Kconfig  | 16 +++++++++++++
+ drivers/tee/tee-uclass.c   | 24 +++++++++++++++++++
+ include/tee.h              | 38 ++++++++++++++++++++++++++++++
+ include/tee/optee_ta_avb.h | 48 ++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 127 insertions(+)
+ create mode 100644 include/tee/optee_ta_avb.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 6a72cc28ca..3251529c16 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -497,6 +497,7 @@ M:	Jens Wiklander <jens.wiklander@linaro.org>
+ S:	Maintained
+ F:	drivers/tee/
+ F:	include/tee.h
++F:	include/tee/
+ 
+ UBI
+ M:	Kyungmin Park <kmpark@infradead.org>
+diff --git a/drivers/tee/optee/Kconfig b/drivers/tee/optee/Kconfig
+index 7484e6fea1..dbfa7846a3 100644
+--- a/drivers/tee/optee/Kconfig
++++ b/drivers/tee/optee/Kconfig
+@@ -9,3 +9,19 @@ config OPTEE
+ 	  mechanism. This driver can request services from OP-TEE, but also
+ 	  handle Remote Procedure Calls (RPC) from OP-TEE needed to
+ 	  execute a service. For more information see: https://www.op-tee.org
++
++if OPTEE
++
++menu "OP-TEE options"
++
++config OPTEE_TA_AVB
++	bool "Support AVB TA"
++	default y
++	help
++	  Enables support for the AVB Trusted Application (TA) in OP-TEE.
++	  The TA can support the "avb" subcommands "read_rb", "write"rb"
++	  and "is_unlocked".
++
++endmenu
++
++endif
+diff --git a/drivers/tee/tee-uclass.c b/drivers/tee/tee-uclass.c
+index 1bee54ebf4..abb88c0fee 100644
+--- a/drivers/tee/tee-uclass.c
++++ b/drivers/tee/tee-uclass.c
+@@ -207,3 +207,27 @@ UCLASS_DRIVER(tee) = {
+ 	.pre_probe = tee_pre_probe,
+ 	.pre_remove = tee_pre_remove,
+ };
++
++void tee_optee_ta_uuid_from_octets(struct tee_optee_ta_uuid *d,
++				   const u8 s[TEE_UUID_LEN])
++{
++	d->time_low = ((u32)s[0] << 24) | ((u32)s[1] << 16) |
++		      ((u32)s[2] << 8) | s[3],
++	d->time_mid = ((u32)s[4] << 8) | s[5];
++	d->time_hi_and_version = ((u32)s[6] << 8) | s[7];
++	memcpy(d->clock_seq_and_node, s + 8, sizeof(d->clock_seq_and_node));
++}
++
++void tee_optee_ta_uuid_to_octets(u8 d[TEE_UUID_LEN],
++				 const struct tee_optee_ta_uuid *s)
++{
++	d[0] = s->time_low >> 24;
++	d[1] = s->time_low >> 16;
++	d[2] = s->time_low >> 8;
++	d[3] = s->time_low;
++	d[4] = s->time_mid >> 8;
++	d[5] = s->time_mid;
++	d[6] = s->time_hi_and_version >> 8;
++	d[7] = s->time_hi_and_version;
++	memcpy(d + 8, s->clock_seq_and_node, sizeof(s->clock_seq_and_node));
++}
+diff --git a/include/tee.h b/include/tee.h
+index b86dbec257..98b1c9cc69 100644
+--- a/include/tee.h
++++ b/include/tee.h
+@@ -49,6 +49,22 @@
+ #define TEE_ORIGIN_TRUSTED_APP		0x00000004
+ 
+ struct udevice;
++
++/**
++ * struct tee_optee_ta_uuid - OP-TEE Trusted Application (TA) UUID format
++ *
++ * Used to identify an OP-TEE TA and define suitable to initialize structs
++ * of this format is distributed with the interface of the TA. The
++ * individual fields of this struct doesn't have any special meaning in
++ * OP-TEE. See RFC4122 for details on the format.
++ */
++struct tee_optee_ta_uuid {
++	u32 time_low;
++	u16 time_mid;
++	u16 time_hi_and_version;
++	u8 clock_seq_and_node[8];
++};
++
+ /**
+  * struct tee_shm - memory shared with the TEE
+  * @dev:	The TEE device
+@@ -333,4 +349,26 @@ int tee_close_session(struct udevice *dev, u32 session);
+ int tee_invoke_func(struct udevice *dev, struct tee_invoke_arg *arg,
+ 		    uint num_param, struct tee_param *param);
+ 
++/**
++ * tee_optee_ta_uuid_from_octets() - Converts to struct tee_optee_ta_uuid
++ * @d:	Destination struct
++ * @s:	Source UUID octets
++ *
++ * Conversion to a struct tee_optee_ta_uuid represantion from binary octet
++ * representation.
++ */
++void tee_optee_ta_uuid_from_octets(struct tee_optee_ta_uuid *d,
++				   const u8 s[TEE_UUID_LEN]);
++
++/**
++ * tee_optee_ta_uuid_to_octets() - Converts from struct tee_optee_ta_uuid
++ * @d:	Destination UUID octets
++ * @s:	Source struct
++ *
++ * Conversion from a struct tee_optee_ta_uuid represantion to binary octet
++ * representation.
++ */
++void tee_optee_ta_uuid_to_octets(u8 d[TEE_UUID_LEN],
++				 const struct tee_optee_ta_uuid *s);
++
+ #endif /* __TEE_H */
+diff --git a/include/tee/optee_ta_avb.h b/include/tee/optee_ta_avb.h
+new file mode 100644
+index 0000000000..074386af19
+--- /dev/null
++++ b/include/tee/optee_ta_avb.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/* Copyright (c) 2018, Linaro Limited */
++
++#ifndef __TA_AVB_H
++#define __TA_AVB_H
++
++#define TA_AVB_UUID { 0x023f8f1a, 0x292a, 0x432b, \
++		      { 0x8f, 0xc4, 0xde, 0x84, 0x71, 0x35, 0x80, 0x67 } }
++
++#define TA_AVB_MAX_ROLLBACK_LOCATIONS	256
++
++/*
++ * Gets the rollback index corresponding to the given rollback index slot.
++ *
++ * in	params[0].value.a:	rollback index slot
++ * out	params[1].value.a:	upper 32 bits of rollback index
++ * out	params[1].value.b:	lower 32 bits of rollback index
++ */
++#define TA_AVB_CMD_READ_ROLLBACK_INDEX	0
++
++/*
++ * Updates the rollback index corresponding to the given rollback index slot.
++ *
++ * Will refuse to update a slot with a lower value.
++ *
++ * in	params[0].value.a:	rollback index slot
++ * in	params[1].value.a:	upper 32 bits of rollback index
++ * in	params[1].value.b:	lower 32 bits of rollback index
++ */
++#define TA_AVB_CMD_WRITE_ROLLBACK_INDEX	1
++
++/*
++ * Gets the lock state of the device.
++ *
++ * out	params[0].value.a:	lock state
++ */
++#define TA_AVB_CMD_READ_LOCK_STATE	2
++
++/*
++ * Sets the lock state of the device.
++ *
++ * If the lock state is changed all rollback slots will be reset to 0
++ *
++ * in	params[0].value.a:	lock state
++ */
++#define TA_AVB_CMD_WRITE_LOCK_STATE	3
++
++#endif /* __TA_AVB_H */
+-- 
+2.17.1
+

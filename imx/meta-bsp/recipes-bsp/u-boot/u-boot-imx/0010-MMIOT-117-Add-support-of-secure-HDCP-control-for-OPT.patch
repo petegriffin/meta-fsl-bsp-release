@@ -1,0 +1,335 @@
+From 3d9eff91f70623837d8665ebc7b5f48634da7675 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Wed, 8 Jul 2020 09:18:39 +0200
+Subject: [PATCH 10/10] MMIOT-117: Add support of secure HDCP control for OPTEE
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ drivers/video/imx/hdp/Makefile         |   2 +
+ drivers/video/imx/hdp/imx-hdp-secure.c | 142 +++++++++++++++++++++++++
+ drivers/video/imx/hdp/imx-hdp-secure.h |  43 ++++++++
+ drivers/video/imx/hdp/util.c           |  49 ++++++++-
+ drivers/video/imx/imx8_hdmi.c          |  17 +++
+ 5 files changed, 252 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/video/imx/hdp/imx-hdp-secure.c
+ create mode 100644 drivers/video/imx/hdp/imx-hdp-secure.h
+
+diff --git a/drivers/video/imx/hdp/Makefile b/drivers/video/imx/hdp/Makefile
+index d704b73201..6aa475e262 100644
+--- a/drivers/video/imx/hdp/Makefile
++++ b/drivers/video/imx/hdp/Makefile
+@@ -17,6 +17,8 @@ obj-$(CONFIG_VIDEO_IMX8_HDMI) += \
+ 	API_HDMITX.o \
+ 	API_AFE_t28hpc_hdmitx.o
+ 
++obj-$(CONFIG_DRM_SDP_HDCP_TA) += imx-hdp-secure.o
++
+ # common objects
+ #obj-y += \
+ #	API_General.o  API_AVI.o API_Infoframe.o \
+diff --git a/drivers/video/imx/hdp/imx-hdp-secure.c b/drivers/video/imx/hdp/imx-hdp-secure.c
+new file mode 100644
+index 0000000000..70603fa99c
+--- /dev/null
++++ b/drivers/video/imx/hdp/imx-hdp-secure.c
+@@ -0,0 +1,142 @@
++/*
++ * Copyright 2017-2019 NXP
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <imx-hdp-secure.h>
++#include <tee.h>
++
++shdcp_bus hdcp_bus;
++
++/********************
++ * Helper functions *
++ ********************/
++static int match(struct tee_version_data *vers, const void *data)
++{
++	return vers->gen_caps & TEE_GEN_CAP_GP;
++}
++
++/*****************
++ * API functions *
++ *****************/
++
++void imx_hdcp_secure_register_write(uint32_t busId, uint32_t offset, uint32_t value)
++{
++        int ret = 0;
++        struct tee_invoke_arg inv_arg;
++        struct tee_param param[4];
++
++        if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++        {
++                debug("%s busId %d is not supported\n",__func__, busId);
++                return;
++        }
++
++        memset(&inv_arg, 0, sizeof(inv_arg));
++        memset(&param, 0, sizeof(param));
++
++        /* Invoke PTA_HDCP_CMD_WRITE function */
++        inv_arg.func = PTA_HDCP_CMD_WRITE;
++        inv_arg.session = hdcp_bus.session;
++
++        /* Fill invoke cmd params */
++        param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
++        param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
++        param[0].u.value.a = busId;
++        param[1].u.value.a = offset;
++        param[1].u.value.b = value;
++
++        ret = tee_invoke_func(hdcp_bus.dev, &inv_arg, 2, param);
++        if ((ret < 0) || inv_arg.ret)
++        {
++                debug("%s PTA_HDCP_CMD_WRITE invoke function err: 0x%08X 0x%08X\n", __func__, ret, inv_arg.ret);
++        }
++}
++
++uint32_t imx_hdcp_secure_register_read(uint32_t busId, uint32_t offset)
++{
++        int ret = 0;
++        struct tee_invoke_arg inv_arg;
++        struct tee_param param[4];
++  
++        if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++        {
++                debug("%s busId %d is not supported\n",__func__, busId);
++                return 0;
++        }
++
++        memset(&inv_arg, 0, sizeof(inv_arg));
++        memset(&param, 0, sizeof(param));
++
++        /* Invoke PTA_HDCP_CMD_READ function */
++        inv_arg.func = PTA_HDCP_CMD_READ;
++        inv_arg.session = hdcp_bus.session;
++
++        /* Fill invoke cmd params */
++        param[0].attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
++        param[1].attr = TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++        param[0].u.value.a = busId;
++        param[0].u.value.b = offset;
++
++        ret = tee_invoke_func(hdcp_bus.dev, &inv_arg, 1, param);
++        if ((ret < 0) || inv_arg.ret) 
++        {
++                debug("%s PTA_HDCP_CMD_READ invoke function err: 0x%08X 0x%08X\n", __func__, ret,inv_arg.ret);
++                return 0;
++        }
++        return param[1].u.value.a;
++}
++
++bool imx_hdcp_secure_open_session(void)
++{
++	struct tee_open_session_arg arg;
++ 	const struct tee_optee_ta_uuid uuid = HDCP_PTA_UUID;
++        int result;
++        struct tee_version_data vers;
++
++        debug("imx_hdcp_secure_open_session\n");
++
++        /* Open optee device */
++	hdcp_bus.dev=tee_find_device(NULL, match, NULL, &vers);
++	if (hdcp_bus.dev==NULL)
++	{
++                debug("%s Failed to open optee device\n",__func__);
++		return false;
++	}
++
++        /* Open session with pseudo HDCP TA */
++ 	memset(&arg, 0, sizeof(arg));
++ 	tee_optee_ta_uuid_to_octets(arg.uuid, &uuid);
++        result=tee_open_session(hdcp_bus.dev, &arg, 0, NULL);
++        if (result)
++	{
++                debug("%s failed to open optee session %d\n",__func__, result);
++                return false;
++	}
++
++        if (arg.ret)
++	{
++                debug("%s failed to opne optee ssesion arg.ret=%d\n",__func__, arg.ret);
++                return false;
++	}
++        hdcp_bus.session=arg.session;
++        return true;
++}
++
++void imx_hdp_secure_close_session(void)
++{
++        debug("imx_hdp_secure_close_session\n");
++
++        tee_close_session(hdcp_bus.dev, hdcp_bus.session);
++        hdcp_bus.session = 0;
++        hdcp_bus.dev=NULL;
++}
+diff --git a/drivers/video/imx/hdp/imx-hdp-secure.h b/drivers/video/imx/hdp/imx-hdp-secure.h
+new file mode 100644
+index 0000000000..25646e4c44
+--- /dev/null
++++ b/drivers/video/imx/hdp/imx-hdp-secure.h
+@@ -0,0 +1,43 @@
++/*
++ * Copyright 2017-2019 NXP
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef _IMX_HDCP_SECURE_H_
++#define _IMX_HDCP_SECURE_H_
++
++#include <common.h>
++
++#define PTA_HDCP_HDP_BUSID              0
++#define PTA_HDCP_HDP_SEC_BUSID          1
++#define PTA_HDCP_RESET_BUSID            2
++#define PTA_HDCP_MAX_BUSID              3
++
++/** @brief  PTA UUID generated at https://www.gguid.com/ */
++/* aaf0c79e-5ff4-4f8c-bef4-042337f0d418 */
++#define HDCP_PTA_UUID {0xaaf0c79e,0x5ff4,0x4f8c,{0xbe,0xf4,0x04,0x23,0x37,0xf0,0xd4,0x18}}
++
++#define PTA_HDCP_CMD_WRITE              0
++#define PTA_HDCP_CMD_READ               1
++
++typedef struct
++{
++        struct udevice *dev;
++        uint32_t session;
++} shdcp_bus;
++
++void imx_hdcp_secure_register_write(uint32_t BusId, uint32_t offset, uint32_t value);
++uint32_t imx_hdcp_secure_register_read(uint32_t BusId, uint32_t offset);
++bool imx_hdcp_secure_open_session(void);
++void imx_hdcp_secure_close_session(void);
++
++#endif /* !_IMX_HDCP_SECURE_H_ */
+diff --git a/drivers/video/imx/hdp/util.c b/drivers/video/imx/hdp/util.c
+index e74aaa509c..6000756d14 100644
+--- a/drivers/video/imx/hdp/util.c
++++ b/drivers/video/imx/hdp/util.c
+@@ -58,18 +58,65 @@
+ #endif
+ state_struct state;
+ 
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++#include <imx-hdp-secure.h>
++#endif
++
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++/* OPTEE to be used to perform read access */
++int cdn_bus_read(unsigned int addr, unsigned int *value)
++{
++	switch(state.bus_type)
++	{
++		case CDN_BUS_TYPE_APB:
++			*value=imx_hdcp_secure_register_read(PTA_HDCP_HDP_BUSID, addr);
++		break;
++
++		case CDN_BUS_TYPE_SAPB:
++			*value=imx_hdcp_secure_register_read(PTA_HDCP_HDP_SEC_BUSID, addr);
++		break;
++
++		default:
++
++		break;
++	}
++	return 0;
++}
++#else
+ int cdn_bus_read(unsigned int addr, unsigned int *value)
+ {
+ 	return state.bus_type ?
+ 	    cdn_sapb_read(addr, value) : cdn_apb_read(addr, value);
+ }
++#endif
+ 
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++/* OPTEE to be used to perform write access */
++int cdn_bus_write(unsigned int addr, unsigned int value)
++{
++	switch(state.bus_type)
++        {
++                case CDN_BUS_TYPE_APB:
++			imx_hdcp_secure_register_write(PTA_HDCP_HDP_BUSID, addr, value);
++                break;
++
++                case CDN_BUS_TYPE_SAPB:
++			imx_hdcp_secure_register_write(PTA_HDCP_HDP_SEC_BUSID, addr, value);
++                break;
++
++                default:
++
++                break;
++        }
++        return 0;
++}
++#else
+ int cdn_bus_write(unsigned int addr, unsigned int value)
+ {
+ 	return state.bus_type ?
+ 	    cdn_sapb_write(addr, value) : cdn_apb_write(addr, value);
+ }
+-
++#endif
+ void internal_itobe(int val, volatile unsigned char *dest, int bytes)
+ {
+ 	int i;
+diff --git a/drivers/video/imx/imx8_hdmi.c b/drivers/video/imx/imx8_hdmi.c
+index 3d73c139c2..8f7dffefdc 100644
+--- a/drivers/video/imx/imx8_hdmi.c
++++ b/drivers/video/imx/imx8_hdmi.c
+@@ -34,6 +34,10 @@
+ #include "API_AFE_t28hpc_hdmitx.h"
+ #endif
+ 
++#if defined(CONFIG_DRM_SDP_HDCP_TA)
++#include <imx-hdp-secure.h>
++#endif
++
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+ #define ON  1
+@@ -163,6 +167,19 @@ static int imx8_hdmi_init(int vic,
+ #endif
+ 		__raw_writel(0x34, hdmi_csr_base);
+ #endif
++
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++        if ( imx_hdcp_secure_open_session() )
++        {
++		debug("%s optee HDCP session opened\n", __func__);
++        }
++        else
++        {
++		debug("%s failed to open optee HDCP session\n", __func__);
++		return -EPERM;
++        }
++#endif
++
+ 	cdn_api_init();
+ 	debug("CDN_API_Init completed\n");
+ 
+-- 
+2.17.1
+

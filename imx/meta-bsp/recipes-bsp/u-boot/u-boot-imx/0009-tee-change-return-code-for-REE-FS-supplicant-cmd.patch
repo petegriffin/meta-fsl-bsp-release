@@ -1,0 +1,133 @@
+From b3de10ca6c25b1604668178d82810ca200a6cb18 Mon Sep 17 00:00:00 2001
+From: Igor Opaniuk <igor.opaniuk@linaro.org>
+Date: Tue, 4 Dec 2018 14:37:19 +0200
+Subject: [PATCH 09/10] tee: change return code for REE FS supplicant cmd
+
+KEEP only OPTEE header changes from below commit, and remove AVB and
+supplicant changes
+
+If OP-TEE core is compiled with support of REE FS and RPMB
+at the same time (CFG_RPMB_FS ?= y; CFG_RPMB_FS ?= y), and persistent
+storage API is used with TEE_STORAGE_PRIVATE storage id, it will
+lead to TA panic.
+
+E/TC:? 0 TA panicked with code 0xffff0009
+.....
+E/TC:? 0 Call stack:
+E/TC:? 0  0x000000004002f2f8 TEE_OpenPersistentObject at
+lib/libutee/tee_api_objects.c:422
+
+In this particular case TEE_ERROR_STORAGE_NOT_AVAILABLE is more suitable
+than TEE_ERROR_NOT_IMPLEMENTED, as it provides to a TA a possibility
+to handle this error code [1].
+
+>From GPD TEE Internal Core specification [2]:
+TEE_ERROR_STORAGE_NOT_AVAILABLE - if the persistent object is stored in a
+storage area which is currently inaccessible. It may be associated with
+the device but unplugged, busy, or inaccessible for some other reason.
+
+[1]: https://github.com/OP-TEE/optee_os/blob/94db01ef448d1e552161c2d861d57a5f8bda0cc0/lib/libutee/tee_api_objects.c#L419
+[2]: https://globalplatform.org/wp-content/uploads/2018/06/GPD_TEE_Internal_Core_API_Specification_v1.1.2.50_PublicReview.pdf
+
+Signed-off-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Reviewed-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ MAINTAINERS                |  1 -
+ drivers/tee/optee/Kconfig  | 16 -------------
+ include/tee/optee_ta_avb.h | 48 --------------------------------------
+ 3 files changed, 65 deletions(-)
+ delete mode 100644 include/tee/optee_ta_avb.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 3251529c16..6a72cc28ca 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -497,7 +497,6 @@ M:	Jens Wiklander <jens.wiklander@linaro.org>
+ S:	Maintained
+ F:	drivers/tee/
+ F:	include/tee.h
+-F:	include/tee/
+ 
+ UBI
+ M:	Kyungmin Park <kmpark@infradead.org>
+diff --git a/drivers/tee/optee/Kconfig b/drivers/tee/optee/Kconfig
+index dbfa7846a3..7484e6fea1 100644
+--- a/drivers/tee/optee/Kconfig
++++ b/drivers/tee/optee/Kconfig
+@@ -9,19 +9,3 @@ config OPTEE
+ 	  mechanism. This driver can request services from OP-TEE, but also
+ 	  handle Remote Procedure Calls (RPC) from OP-TEE needed to
+ 	  execute a service. For more information see: https://www.op-tee.org
+-
+-if OPTEE
+-
+-menu "OP-TEE options"
+-
+-config OPTEE_TA_AVB
+-	bool "Support AVB TA"
+-	default y
+-	help
+-	  Enables support for the AVB Trusted Application (TA) in OP-TEE.
+-	  The TA can support the "avb" subcommands "read_rb", "write"rb"
+-	  and "is_unlocked".
+-
+-endmenu
+-
+-endif
+diff --git a/include/tee/optee_ta_avb.h b/include/tee/optee_ta_avb.h
+deleted file mode 100644
+index 074386af19..0000000000
+--- a/include/tee/optee_ta_avb.h
++++ /dev/null
+@@ -1,48 +0,0 @@
+-/* SPDX-License-Identifier: BSD-2-Clause */
+-/* Copyright (c) 2018, Linaro Limited */
+-
+-#ifndef __TA_AVB_H
+-#define __TA_AVB_H
+-
+-#define TA_AVB_UUID { 0x023f8f1a, 0x292a, 0x432b, \
+-		      { 0x8f, 0xc4, 0xde, 0x84, 0x71, 0x35, 0x80, 0x67 } }
+-
+-#define TA_AVB_MAX_ROLLBACK_LOCATIONS	256
+-
+-/*
+- * Gets the rollback index corresponding to the given rollback index slot.
+- *
+- * in	params[0].value.a:	rollback index slot
+- * out	params[1].value.a:	upper 32 bits of rollback index
+- * out	params[1].value.b:	lower 32 bits of rollback index
+- */
+-#define TA_AVB_CMD_READ_ROLLBACK_INDEX	0
+-
+-/*
+- * Updates the rollback index corresponding to the given rollback index slot.
+- *
+- * Will refuse to update a slot with a lower value.
+- *
+- * in	params[0].value.a:	rollback index slot
+- * in	params[1].value.a:	upper 32 bits of rollback index
+- * in	params[1].value.b:	lower 32 bits of rollback index
+- */
+-#define TA_AVB_CMD_WRITE_ROLLBACK_INDEX	1
+-
+-/*
+- * Gets the lock state of the device.
+- *
+- * out	params[0].value.a:	lock state
+- */
+-#define TA_AVB_CMD_READ_LOCK_STATE	2
+-
+-/*
+- * Sets the lock state of the device.
+- *
+- * If the lock state is changed all rollback slots will be reset to 0
+- *
+- * in	params[0].value.a:	lock state
+- */
+-#define TA_AVB_CMD_WRITE_LOCK_STATE	3
+-
+-#endif /* __TA_AVB_H */
+-- 
+2.17.1
+

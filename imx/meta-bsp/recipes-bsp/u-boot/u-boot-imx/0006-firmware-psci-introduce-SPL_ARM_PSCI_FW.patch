@@ -1,0 +1,40 @@
+From 3481cb0d2158fddeee2a594fe7a25e875c1d2926 Mon Sep 17 00:00:00 2001
+From: Peng Fan <peng.fan@nxp.com>
+Date: Sun, 9 Dec 2018 12:45:45 +0000
+Subject: [PATCH 06/10] firmware: psci: introduce SPL_ARM_PSCI_FW
+
+Introduce a new macro SPL_ARM_PSCI_FW
+
+Signed-off-by: Peng Fan <peng.fan@nxp.com>
+Reviewed-by: Stefano Babic <sbabic@denx.de>
+---
+ drivers/firmware/Kconfig  | 4 ++++
+ drivers/firmware/Makefile | 2 +-
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/firmware/Kconfig b/drivers/firmware/Kconfig
+index 4c32426e0e..232f6e544c 100644
+--- a/drivers/firmware/Kconfig
++++ b/drivers/firmware/Kconfig
+@@ -1,6 +1,10 @@
+ config FIRMWARE
+ 	bool
+ 
++config SPL_ARM_PSCI_FW
++	bool
++	select FIRMWARE
++
+ config ARM_PSCI_FW
+ 	bool
+ 	select FIRMWARE
+diff --git a/drivers/firmware/Makefile b/drivers/firmware/Makefile
+index b208255368..fac81cc578 100644
+--- a/drivers/firmware/Makefile
++++ b/drivers/firmware/Makefile
+@@ -1,2 +1,2 @@
+ obj-$(CONFIG_FIRMWARE)		+= firmware-uclass.o
+-obj-$(CONFIG_ARM_PSCI_FW)	+= psci.o
++obj-$(CONFIG_$(SPL_)ARM_PSCI_FW)	+= psci.o
+-- 
+2.17.1
+

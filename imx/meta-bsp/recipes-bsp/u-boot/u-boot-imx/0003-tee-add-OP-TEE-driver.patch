@@ -1,0 +1,2015 @@
+From 52ea2dc568f76aa0a55964ddaedd498d7a6210ed Mon Sep 17 00:00:00 2001
+From: Jens Wiklander <jens.wiklander@linaro.org>
+Date: Tue, 25 Sep 2018 16:40:11 +0200
+Subject: [PATCH 03/10] tee: add OP-TEE driver
+
+Adds a OP-TEE driver.
+
+* Targets ARM and ARM64
+* Supports using any U-Boot memory as shared memory
+* Probes OP-TEE version using SMCs
+* Uses OPTEE message protocol version 2 to communicate with secure world
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Tested-by: Igor Opaniuk <igor.opaniuk@linaro.org>
+Signed-off-by: Jens Wiklander <jens.wiklander@linaro.org>
+---
+ drivers/tee/Kconfig                      |  21 +
+ drivers/tee/Makefile                     |   4 +
+ drivers/tee/optee/Kconfig                |  11 +
+ drivers/tee/optee/Makefile               |   4 +
+ drivers/tee/optee/core.c                 | 654 +++++++++++++++++++++++
+ drivers/tee/optee/optee_msg.h            | 425 +++++++++++++++
+ drivers/tee/optee/optee_msg_supplicant.h | 240 +++++++++
+ drivers/tee/optee/optee_private.h        |  12 +
+ drivers/tee/optee/optee_smc.h            | 450 ++++++++++++++++
+ drivers/tee/optee/supplicant.c           |  93 ++++
+ 10 files changed, 1914 insertions(+)
+ create mode 100644 drivers/tee/Kconfig
+ create mode 100644 drivers/tee/Makefile
+ create mode 100644 drivers/tee/optee/Kconfig
+ create mode 100644 drivers/tee/optee/Makefile
+ create mode 100644 drivers/tee/optee/core.c
+ create mode 100644 drivers/tee/optee/optee_msg.h
+ create mode 100644 drivers/tee/optee/optee_msg_supplicant.h
+ create mode 100644 drivers/tee/optee/optee_private.h
+ create mode 100644 drivers/tee/optee/optee_smc.h
+ create mode 100644 drivers/tee/optee/supplicant.c
+
+diff --git a/drivers/tee/Kconfig b/drivers/tee/Kconfig
+new file mode 100644
+index 0000000000..835c256e92
+--- /dev/null
++++ b/drivers/tee/Kconfig
+@@ -0,0 +1,21 @@
++# Generic Trusted Execution Environment Configuration
++config TEE
++	bool "Trusted Execution Environment support"
++	depends on ARM && (ARM64 || CPU_V7A)
++	select ARM_SMCCC
++	help
++	  This implements a generic interface towards a Trusted Execution
++	  Environment (TEE). A TEE is a trusted OS running in some secure
++	  environment, for example, TrustZone on ARM cpus, or a separate
++	  secure co-processor etc. See also:
++	  https://en.wikipedia.org/wiki/Trusted_execution_environment
++
++if TEE
++
++menu "TEE drivers"
++
++source "drivers/tee/optee/Kconfig"
++
++endmenu
++
++endif
+diff --git a/drivers/tee/Makefile b/drivers/tee/Makefile
+new file mode 100644
+index 0000000000..19633b60f2
+--- /dev/null
++++ b/drivers/tee/Makefile
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: GPL-2.0+
++
++obj-y += tee-uclass.o
++obj-$(CONFIG_OPTEE) += optee/
+diff --git a/drivers/tee/optee/Kconfig b/drivers/tee/optee/Kconfig
+new file mode 100644
+index 0000000000..7484e6fea1
+--- /dev/null
++++ b/drivers/tee/optee/Kconfig
+@@ -0,0 +1,11 @@
++# OP-TEE Trusted Execution Environment Configuration
++config OPTEE
++	bool "OP-TEE"
++	depends on ARM_SMCCC
++	help
++	  This implements the OP-TEE Trusted Execution Environment (TEE)
++	  driver. OP-TEE is a Trusted OS designed primarily to rely on the
++	  ARM TrustZone(R) technology as the underlying hardware isolation
++	  mechanism. This driver can request services from OP-TEE, but also
++	  handle Remote Procedure Calls (RPC) from OP-TEE needed to
++	  execute a service. For more information see: https://www.op-tee.org
+diff --git a/drivers/tee/optee/Makefile b/drivers/tee/optee/Makefile
+new file mode 100644
+index 0000000000..6148feb474
+--- /dev/null
++++ b/drivers/tee/optee/Makefile
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: GPL-2.0+
++
++obj-y += core.o
++obj-y += supplicant.o
+diff --git a/drivers/tee/optee/core.c b/drivers/tee/optee/core.c
+new file mode 100644
+index 0000000000..726382da9b
+--- /dev/null
++++ b/drivers/tee/optee/core.c
+@@ -0,0 +1,654 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (c) 2018 Linaro Limited
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <log.h>
++#include <tee.h>
++#include <linux/arm-smccc.h>
++#include <linux/io.h>
++
++#include "optee_smc.h"
++#include "optee_msg.h"
++#include "optee_private.h"
++
++#define PAGELIST_ENTRIES_PER_PAGE \
++	((OPTEE_MSG_NONCONTIG_PAGE_SIZE / sizeof(u64)) - 1)
++
++typedef void (optee_invoke_fn)(unsigned long, unsigned long, unsigned long,
++			       unsigned long, unsigned long, unsigned long,
++			       unsigned long, unsigned long,
++			       struct arm_smccc_res *);
++
++struct optee_pdata {
++	optee_invoke_fn *invoke_fn;
++};
++
++struct rpc_param {
++	u32	a0;
++	u32	a1;
++	u32	a2;
++	u32	a3;
++	u32	a4;
++	u32	a5;
++	u32	a6;
++	u32	a7;
++};
++
++/**
++ * reg_pair_to_ptr() - Make a pointer of 2 32-bit values
++ * @reg0:	High bits of the pointer
++ * @reg1:	Low bits of the pointer
++ *
++ * Returns the combined result, note that if a pointer is 32-bit wide @reg0
++ * will be discarded.
++ */
++static void *reg_pair_to_ptr(u32 reg0, u32 reg1)
++{
++	return (void *)(ulong)(((u64)reg0 << 32) | reg1);
++}
++
++/**
++ * reg_pair_from_64() - Split a 64-bit value into two 32-bit values
++ * @reg0:	High bits of @val
++ * @reg1:	Low bits of @val
++ * @val:	The value to split
++ */
++static void reg_pair_from_64(u32 *reg0, u32 *reg1, u64 val)
++{
++	*reg0 = val >> 32;
++	*reg1 = val;
++}
++
++/**
++ * optee_alloc_and_init_page_list() - Provide page list of memory buffer
++ * @buf:		Start of buffer
++ * @len:		Length of buffer
++ * @phys_buf_ptr	Physical pointer with coded offset to page list
++ *
++ * Secure world doesn't share mapping with Normal world (U-Boot in this case)
++ * so physical pointers are needed when sharing pointers.
++ *
++ * Returns a pointer page list on success or NULL on failure
++ */
++void *optee_alloc_and_init_page_list(void *buf, ulong len, u64 *phys_buf_ptr)
++{
++	const unsigned int page_size = OPTEE_MSG_NONCONTIG_PAGE_SIZE;
++	const phys_addr_t page_mask = page_size - 1;
++	u8 *buf_base;
++	unsigned int page_offset;
++	unsigned int num_pages;
++	unsigned int list_size;
++	unsigned int n;
++	void *page_list;
++	struct {
++		u64 pages_list[PAGELIST_ENTRIES_PER_PAGE];
++		u64 next_page_data;
++	} *pages_data;
++
++	/*
++	 * A Memory buffer is described in chunks of 4k. The list of
++	 * physical addresses has to be represented by a physical pointer
++	 * too and a single list has to start at a 4k page and fit into
++	 * that page. In order to be able to describe large memory buffers
++	 * these 4k pages carrying physical addresses are linked together
++	 * in a list. See OPTEE_MSG_ATTR_NONCONTIG in
++	 * drivers/tee/optee/optee_msg.h for more information.
++	 */
++
++	page_offset = (ulong)buf & page_mask;
++	num_pages = roundup(page_offset + len, page_size) / page_size;
++	list_size = DIV_ROUND_UP(num_pages, PAGELIST_ENTRIES_PER_PAGE) *
++		    page_size;
++	page_list = memalign(page_size, list_size);
++	if (!page_list)
++		return NULL;
++
++	pages_data = page_list;
++	buf_base = (u8 *)rounddown((ulong)buf, page_size);
++	n = 0;
++	while (num_pages) {
++		pages_data->pages_list[n] = virt_to_phys(buf_base);
++		n++;
++		buf_base += page_size;
++		num_pages--;
++
++		if (n == PAGELIST_ENTRIES_PER_PAGE) {
++			pages_data->next_page_data =
++				virt_to_phys(pages_data + 1);
++			pages_data++;
++			n = 0;
++		}
++	}
++
++	*phys_buf_ptr = virt_to_phys(page_list) | page_offset;
++	return page_list;
++}
++
++static void optee_get_version(struct udevice *dev,
++			      struct tee_version_data *vers)
++{
++	struct tee_version_data v = {
++		.gen_caps = TEE_GEN_CAP_GP | TEE_GEN_CAP_REG_MEM,
++	};
++
++	*vers = v;
++}
++
++static int get_msg_arg(struct udevice *dev, uint num_params,
++		       struct tee_shm **shmp, struct optee_msg_arg **msg_arg)
++{
++	int rc;
++	struct optee_msg_arg *ma;
++
++	rc = __tee_shm_add(dev, OPTEE_MSG_NONCONTIG_PAGE_SIZE, NULL,
++			   OPTEE_MSG_GET_ARG_SIZE(num_params), TEE_SHM_ALLOC,
++			   shmp);
++	if (rc)
++		return rc;
++
++	ma = (*shmp)->addr;
++	memset(ma, 0, OPTEE_MSG_GET_ARG_SIZE(num_params));
++	ma->num_params = num_params;
++	*msg_arg = ma;
++
++	return 0;
++}
++
++static int to_msg_param(struct optee_msg_param *msg_params, uint num_params,
++			const struct tee_param *params)
++{
++	uint n;
++
++	for (n = 0; n < num_params; n++) {
++		const struct tee_param *p = params + n;
++		struct optee_msg_param *mp = msg_params + n;
++
++		switch (p->attr) {
++		case TEE_PARAM_ATTR_TYPE_NONE:
++			mp->attr = OPTEE_MSG_ATTR_TYPE_NONE;
++			memset(&mp->u, 0, sizeof(mp->u));
++			break;
++		case TEE_PARAM_ATTR_TYPE_VALUE_INPUT:
++		case TEE_PARAM_ATTR_TYPE_VALUE_OUTPUT:
++		case TEE_PARAM_ATTR_TYPE_VALUE_INOUT:
++			mp->attr = OPTEE_MSG_ATTR_TYPE_VALUE_INPUT + p->attr -
++				   TEE_PARAM_ATTR_TYPE_VALUE_INPUT;
++			mp->u.value.a = p->u.value.a;
++			mp->u.value.b = p->u.value.b;
++			mp->u.value.c = p->u.value.c;
++			break;
++		case TEE_PARAM_ATTR_TYPE_MEMREF_INPUT:
++		case TEE_PARAM_ATTR_TYPE_MEMREF_OUTPUT:
++		case TEE_PARAM_ATTR_TYPE_MEMREF_INOUT:
++			mp->attr = OPTEE_MSG_ATTR_TYPE_RMEM_INPUT + p->attr -
++				   TEE_PARAM_ATTR_TYPE_MEMREF_INPUT;
++			mp->u.rmem.shm_ref = (ulong)p->u.memref.shm;
++			mp->u.rmem.size = p->u.memref.size;
++			mp->u.rmem.offs = p->u.memref.shm_offs;
++			break;
++		default:
++			return -EINVAL;
++		}
++	}
++	return 0;
++}
++
++static int from_msg_param(struct tee_param *params, uint num_params,
++			  const struct optee_msg_param *msg_params)
++{
++	uint n;
++	struct tee_shm *shm;
++
++	for (n = 0; n < num_params; n++) {
++		struct tee_param *p = params + n;
++		const struct optee_msg_param *mp = msg_params + n;
++		u32 attr = mp->attr & OPTEE_MSG_ATTR_TYPE_MASK;
++
++		switch (attr) {
++		case OPTEE_MSG_ATTR_TYPE_NONE:
++			p->attr = TEE_PARAM_ATTR_TYPE_NONE;
++			memset(&p->u, 0, sizeof(p->u));
++			break;
++		case OPTEE_MSG_ATTR_TYPE_VALUE_INPUT:
++		case OPTEE_MSG_ATTR_TYPE_VALUE_OUTPUT:
++		case OPTEE_MSG_ATTR_TYPE_VALUE_INOUT:
++			p->attr = TEE_PARAM_ATTR_TYPE_VALUE_INPUT + attr -
++				  OPTEE_MSG_ATTR_TYPE_VALUE_INPUT;
++			p->u.value.a = mp->u.value.a;
++			p->u.value.b = mp->u.value.b;
++			p->u.value.c = mp->u.value.c;
++			break;
++		case OPTEE_MSG_ATTR_TYPE_RMEM_INPUT:
++		case OPTEE_MSG_ATTR_TYPE_RMEM_OUTPUT:
++		case OPTEE_MSG_ATTR_TYPE_RMEM_INOUT:
++			p->attr = TEE_PARAM_ATTR_TYPE_MEMREF_INPUT + attr -
++				  OPTEE_MSG_ATTR_TYPE_RMEM_INPUT;
++			p->u.memref.size = mp->u.rmem.size;
++			shm = (struct tee_shm *)(ulong)mp->u.rmem.shm_ref;
++
++			if (!shm) {
++				p->u.memref.shm_offs = 0;
++				p->u.memref.shm = NULL;
++				break;
++			}
++			p->u.memref.shm_offs = mp->u.rmem.offs;
++			p->u.memref.shm = shm;
++			break;
++		default:
++			return -EINVAL;
++		}
++	}
++	return 0;
++}
++
++static void handle_rpc(struct udevice *dev, struct rpc_param *param,
++		       void *page_list)
++{
++	struct tee_shm *shm;
++
++	switch (OPTEE_SMC_RETURN_GET_RPC_FUNC(param->a0)) {
++	case OPTEE_SMC_RPC_FUNC_ALLOC:
++		if (!__tee_shm_add(dev, OPTEE_MSG_NONCONTIG_PAGE_SIZE, NULL,
++				   param->a1, TEE_SHM_ALLOC | TEE_SHM_REGISTER,
++				   &shm)) {
++			reg_pair_from_64(&param->a1, &param->a2,
++					 virt_to_phys(shm->addr));
++			/* "cookie" */
++			reg_pair_from_64(&param->a4, &param->a5, (ulong)shm);
++		} else {
++			param->a1 = 0;
++			param->a2 = 0;
++			param->a4 = 0;
++			param->a5 = 0;
++		}
++		break;
++	case OPTEE_SMC_RPC_FUNC_FREE:
++		shm = reg_pair_to_ptr(param->a1, param->a2);
++		tee_shm_free(shm);
++		break;
++	case OPTEE_SMC_RPC_FUNC_FOREIGN_INTR:
++		break;
++	case OPTEE_SMC_RPC_FUNC_CMD:
++		shm = reg_pair_to_ptr(param->a1, param->a2);
++		optee_suppl_cmd(dev, shm, page_list);
++		break;
++	default:
++		break;
++	}
++
++	param->a0 = OPTEE_SMC_CALL_RETURN_FROM_RPC;
++}
++
++static u32 call_err_to_res(u32 call_err)
++{
++	switch (call_err) {
++	case OPTEE_SMC_RETURN_OK:
++		return TEE_SUCCESS;
++	default:
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++}
++
++static u32 do_call_with_arg(struct udevice *dev, struct optee_msg_arg *arg)
++{
++	struct optee_pdata *pdata = dev_get_platdata(dev);
++	struct rpc_param param = { .a0 = OPTEE_SMC_CALL_WITH_ARG };
++	void *page_list = NULL;
++
++	reg_pair_from_64(&param.a1, &param.a2, virt_to_phys(arg));
++	while (true) {
++		struct arm_smccc_res res;
++
++		pdata->invoke_fn(param.a0, param.a1, param.a2, param.a3,
++				 param.a4, param.a5, param.a6, param.a7, &res);
++
++		free(page_list);
++		page_list = NULL;
++
++		if (OPTEE_SMC_RETURN_IS_RPC(res.a0)) {
++			param.a0 = res.a0;
++			param.a1 = res.a1;
++			param.a2 = res.a2;
++			param.a3 = res.a3;
++			handle_rpc(dev, &param, &page_list);
++		} else {
++			return call_err_to_res(res.a0);
++		}
++	}
++}
++
++static int optee_close_session(struct udevice *dev, u32 session)
++{
++	int rc;
++	struct tee_shm *shm;
++	struct optee_msg_arg *msg_arg;
++
++	rc = get_msg_arg(dev, 0, &shm, &msg_arg);
++	if (rc)
++		return rc;
++
++	msg_arg->cmd = OPTEE_MSG_CMD_CLOSE_SESSION;
++	msg_arg->session = session;
++	do_call_with_arg(dev, msg_arg);
++
++	tee_shm_free(shm);
++
++	return 0;
++}
++
++static int optee_open_session(struct udevice *dev,
++			      struct tee_open_session_arg *arg,
++			      uint num_params, struct tee_param *params)
++{
++	int rc;
++	struct tee_shm *shm;
++	struct optee_msg_arg *msg_arg;
++
++	rc = get_msg_arg(dev, num_params + 2, &shm, &msg_arg);
++	if (rc)
++		return rc;
++
++	msg_arg->cmd = OPTEE_MSG_CMD_OPEN_SESSION;
++	/*
++	 * Initialize and add the meta parameters needed when opening a
++	 * session.
++	 */
++	msg_arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_VALUE_INPUT |
++				  OPTEE_MSG_ATTR_META;
++	msg_arg->params[1].attr = OPTEE_MSG_ATTR_TYPE_VALUE_INPUT |
++				  OPTEE_MSG_ATTR_META;
++	memcpy(&msg_arg->params[0].u.value, arg->uuid, sizeof(arg->uuid));
++	memcpy(&msg_arg->params[1].u.value, arg->uuid, sizeof(arg->clnt_uuid));
++	msg_arg->params[1].u.value.c = arg->clnt_login;
++
++	rc = to_msg_param(msg_arg->params + 2, num_params, params);
++	if (rc)
++		goto out;
++
++	arg->ret = do_call_with_arg(dev, msg_arg);
++	if (arg->ret) {
++		arg->ret_origin = TEE_ORIGIN_COMMS;
++		goto out;
++	}
++
++	if (from_msg_param(params, num_params, msg_arg->params + 2)) {
++		arg->ret = TEE_ERROR_COMMUNICATION;
++		arg->ret_origin = TEE_ORIGIN_COMMS;
++		/* Close session again to avoid leakage */
++		optee_close_session(dev, msg_arg->session);
++		goto out;
++	}
++
++	arg->session = msg_arg->session;
++	arg->ret = msg_arg->ret;
++	arg->ret_origin = msg_arg->ret_origin;
++out:
++	tee_shm_free(shm);
++
++	return rc;
++}
++
++static int optee_invoke_func(struct udevice *dev, struct tee_invoke_arg *arg,
++			     uint num_params, struct tee_param *params)
++{
++	struct tee_shm *shm;
++	struct optee_msg_arg *msg_arg;
++	int rc;
++
++	rc = get_msg_arg(dev, num_params, &shm, &msg_arg);
++	if (rc)
++		return rc;
++	msg_arg->cmd = OPTEE_MSG_CMD_INVOKE_COMMAND;
++	msg_arg->func = arg->func;
++	msg_arg->session = arg->session;
++
++	rc = to_msg_param(msg_arg->params, num_params, params);
++	if (rc)
++		goto out;
++
++	arg->ret = do_call_with_arg(dev, msg_arg);
++	if (arg->ret) {
++		arg->ret_origin = TEE_ORIGIN_COMMS;
++		goto out;
++	}
++
++	if (from_msg_param(params, num_params, msg_arg->params)) {
++		arg->ret = TEE_ERROR_COMMUNICATION;
++		arg->ret_origin = TEE_ORIGIN_COMMS;
++		goto out;
++	}
++
++	arg->ret = msg_arg->ret;
++	arg->ret_origin = msg_arg->ret_origin;
++out:
++	tee_shm_free(shm);
++	return rc;
++}
++
++static int optee_shm_register(struct udevice *dev, struct tee_shm *shm)
++{
++	struct tee_shm *shm_arg;
++	struct optee_msg_arg *msg_arg;
++	void *pl;
++	u64 ph_ptr;
++	int rc;
++
++	rc = get_msg_arg(dev, 1, &shm_arg, &msg_arg);
++	if (rc)
++		return rc;
++
++	pl = optee_alloc_and_init_page_list(shm->addr, shm->size, &ph_ptr);
++	if (!pl) {
++		rc = -ENOMEM;
++		goto out;
++	}
++
++	msg_arg->cmd = OPTEE_MSG_CMD_REGISTER_SHM;
++	msg_arg->params->attr = OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
++				OPTEE_MSG_ATTR_NONCONTIG;
++	msg_arg->params->u.tmem.buf_ptr = ph_ptr;
++	msg_arg->params->u.tmem.shm_ref = (ulong)shm;
++	msg_arg->params->u.tmem.size = shm->size;
++
++	if (do_call_with_arg(dev, msg_arg) || msg_arg->ret)
++		rc = -EINVAL;
++
++	free(pl);
++out:
++	tee_shm_free(shm_arg);
++
++	return rc;
++}
++
++static int optee_shm_unregister(struct udevice *dev, struct tee_shm *shm)
++{
++	struct tee_shm *shm_arg;
++	struct optee_msg_arg *msg_arg;
++	int rc;
++
++	rc = get_msg_arg(dev, 1, &shm_arg, &msg_arg);
++	if (rc)
++		return rc;
++
++	msg_arg->cmd = OPTEE_MSG_CMD_UNREGISTER_SHM;
++	msg_arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_RMEM_INPUT;
++	msg_arg->params[0].u.rmem.shm_ref = (ulong)shm;
++
++	if (do_call_with_arg(dev, msg_arg) || msg_arg->ret)
++		rc = -EINVAL;
++	tee_shm_free(shm_arg);
++
++	return rc;
++}
++
++static const struct tee_driver_ops optee_ops = {
++	.get_version = optee_get_version,
++	.open_session = optee_open_session,
++	.close_session = optee_close_session,
++	.invoke_func = optee_invoke_func,
++	.shm_register = optee_shm_register,
++	.shm_unregister = optee_shm_unregister,
++};
++
++static bool is_optee_api(optee_invoke_fn *invoke_fn)
++{
++	struct arm_smccc_res res;
++
++	invoke_fn(OPTEE_SMC_CALLS_UID, 0, 0, 0, 0, 0, 0, 0, &res);
++
++	return res.a0 == OPTEE_MSG_UID_0 && res.a1 == OPTEE_MSG_UID_1 &&
++	       res.a2 == OPTEE_MSG_UID_2 && res.a3 == OPTEE_MSG_UID_3;
++}
++
++static void print_os_revision(optee_invoke_fn *invoke_fn)
++{
++	union {
++		struct arm_smccc_res smccc;
++		struct optee_smc_call_get_os_revision_result result;
++	} res = {
++		.result = {
++		.build_id = 0
++		}
++	};
++
++	invoke_fn(OPTEE_SMC_CALL_GET_OS_REVISION, 0, 0, 0, 0, 0, 0, 0,
++		  &res.smccc);
++
++	if (res.result.build_id)
++		debug("OP-TEE revision %lu.%lu (%08lx)\n", res.result.major,
++		      res.result.minor, res.result.build_id);
++	else
++		debug("OP-TEE revision %lu.%lu\n", res.result.major,
++		      res.result.minor);
++}
++
++static bool api_revision_is_compatible(optee_invoke_fn *invoke_fn)
++{
++	union {
++		struct arm_smccc_res smccc;
++		struct optee_smc_calls_revision_result result;
++	} res;
++
++	invoke_fn(OPTEE_SMC_CALLS_REVISION, 0, 0, 0, 0, 0, 0, 0, &res.smccc);
++
++	return res.result.major == OPTEE_MSG_REVISION_MAJOR &&
++	       (int)res.result.minor >= OPTEE_MSG_REVISION_MINOR;
++}
++
++static bool exchange_capabilities(optee_invoke_fn *invoke_fn, u32 *sec_caps)
++{
++	union {
++		struct arm_smccc_res smccc;
++		struct optee_smc_exchange_capabilities_result result;
++	} res;
++
++	invoke_fn(OPTEE_SMC_EXCHANGE_CAPABILITIES,
++		  OPTEE_SMC_NSEC_CAP_UNIPROCESSOR, 0, 0, 0, 0, 0, 0,
++		  &res.smccc);
++
++	if (res.result.status != OPTEE_SMC_RETURN_OK)
++		return false;
++
++	*sec_caps = res.result.capabilities;
++
++	return true;
++}
++
++/* Simple wrapper functions to be able to use a function pointer */
++static void optee_smccc_smc(unsigned long a0, unsigned long a1,
++			    unsigned long a2, unsigned long a3,
++			    unsigned long a4, unsigned long a5,
++			    unsigned long a6, unsigned long a7,
++			    struct arm_smccc_res *res)
++{
++	arm_smccc_smc(a0, a1, a2, a3, a4, a5, a6, a7, res);
++}
++
++static void optee_smccc_hvc(unsigned long a0, unsigned long a1,
++			    unsigned long a2, unsigned long a3,
++			    unsigned long a4, unsigned long a5,
++			    unsigned long a6, unsigned long a7,
++			    struct arm_smccc_res *res)
++{
++	arm_smccc_hvc(a0, a1, a2, a3, a4, a5, a6, a7, res);
++}
++
++static optee_invoke_fn *get_invoke_func(struct udevice *dev)
++{
++	const char *method;
++
++	debug("optee: looking for conduit method in DT.\n");
++	method = ofnode_get_property(dev->node, "method", NULL);
++	if (!method) {
++		debug("optee: missing \"method\" property\n");
++		return ERR_PTR(-ENXIO);
++	}
++
++	if (!strcmp("hvc", method))
++		return optee_smccc_hvc;
++	else if (!strcmp("smc", method))
++		return optee_smccc_smc;
++
++	debug("optee: invalid \"method\" property: %s\n", method);
++	return ERR_PTR(-EINVAL);
++}
++
++static int optee_ofdata_to_platdata(struct udevice *dev)
++{
++	struct optee_pdata *pdata = dev_get_platdata(dev);
++
++	pdata->invoke_fn = get_invoke_func(dev);
++	if (IS_ERR(pdata->invoke_fn))
++		return PTR_ERR(pdata->invoke_fn);
++
++	return 0;
++}
++
++static int optee_probe(struct udevice *dev)
++{
++	struct optee_pdata *pdata = dev_get_platdata(dev);
++	u32 sec_caps;
++
++	if (!is_optee_api(pdata->invoke_fn)) {
++		debug("%s: OP-TEE api uid mismatch\n", __func__);
++		return -ENOENT;
++	}
++
++	print_os_revision(pdata->invoke_fn);
++
++	if (!api_revision_is_compatible(pdata->invoke_fn)) {
++		debug("%s: OP-TEE api revision mismatch\n", __func__);
++		return -ENOENT;
++	}
++
++	/*
++	 * OP-TEE can use both shared memory via predefined pool or as
++	 * dynamic shared memory provided by normal world. To keep things
++	 * simple we're only using dynamic shared memory in this driver.
++	 */
++	if (!exchange_capabilities(pdata->invoke_fn, &sec_caps) ||
++	    !(sec_caps & OPTEE_SMC_SEC_CAP_DYNAMIC_SHM)) {
++		debug("%s: OP-TEE capabilities mismatch\n", __func__);
++		return -ENOENT;
++	}
++
++	return 0;
++}
++
++static const struct udevice_id optee_match[] = {
++	{ .compatible = "linaro,optee-tz" },
++	{},
++};
++
++U_BOOT_DRIVER(optee) = {
++	.name = "optee",
++	.id = UCLASS_TEE,
++	.of_match = optee_match,
++	.ofdata_to_platdata = optee_ofdata_to_platdata,
++	.probe = optee_probe,
++	.ops = &optee_ops,
++	.platdata_auto_alloc_size = sizeof(struct optee_pdata),
++};
+diff --git a/drivers/tee/optee/optee_msg.h b/drivers/tee/optee/optee_msg.h
+new file mode 100644
+index 0000000000..24c60960fc
+--- /dev/null
++++ b/drivers/tee/optee/optee_msg.h
+@@ -0,0 +1,425 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright (c) 2015-2018, Linaro Limited
++ */
++
++#ifndef _OPTEE_MSG_H
++#define _OPTEE_MSG_H
++
++#include <linux/bitops.h>
++#include <linux/types.h>
++
++/*
++ * This file defines the OP-TEE message protocol used to communicate with
++ * an instance of OP-TEE running in secure world. This file is based on
++ * https://github.com/OP-TEE/optee_os/blob/master/core/include/optee_msg.h
++ * and may need to be updated when introducing new features.
++ *
++ * This file is divided into three sections.
++ * 1. Formatting of messages.
++ * 2. Requests from normal world
++ * 3. Requests from secure world, Remote Procedure Call (RPC), handled by
++ *    tee-supplicant.
++ */
++
++/*****************************************************************************
++ * Part 1 - formatting of messages
++ *****************************************************************************/
++
++#define OPTEE_MSG_ATTR_TYPE_NONE		0x0
++#define OPTEE_MSG_ATTR_TYPE_VALUE_INPUT		0x1
++#define OPTEE_MSG_ATTR_TYPE_VALUE_OUTPUT	0x2
++#define OPTEE_MSG_ATTR_TYPE_VALUE_INOUT		0x3
++#define OPTEE_MSG_ATTR_TYPE_RMEM_INPUT		0x5
++#define OPTEE_MSG_ATTR_TYPE_RMEM_OUTPUT		0x6
++#define OPTEE_MSG_ATTR_TYPE_RMEM_INOUT		0x7
++#define OPTEE_MSG_ATTR_TYPE_TMEM_INPUT		0x9
++#define OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT		0xa
++#define OPTEE_MSG_ATTR_TYPE_TMEM_INOUT		0xb
++
++#define OPTEE_MSG_ATTR_TYPE_MASK		GENMASK(7, 0)
++
++/*
++ * Meta parameter to be absorbed by the Secure OS and not passed
++ * to the Trusted Application.
++ *
++ * Currently only used with OPTEE_MSG_CMD_OPEN_SESSION.
++ */
++#define OPTEE_MSG_ATTR_META			BIT(8)
++
++/*
++ * Pointer to a list of pages used to register user-defined SHM buffer.
++ * Used with OPTEE_MSG_ATTR_TYPE_TMEM_*.
++ * buf_ptr should point to the beginning of the buffer. Buffer will contain
++ * list of page addresses. OP-TEE core can reconstruct contiguous buffer from
++ * that page addresses list. Page addresses are stored as 64 bit values.
++ * Last entry on a page should point to the next page of buffer.
++ * Every entry in buffer should point to a 4k page beginning (12 least
++ * significant bits must be equal to zero).
++ *
++ * 12 least significant bints of optee_msg_param.u.tmem.buf_ptr should hold page
++ * offset of the user buffer.
++ *
++ * So, entries should be placed like members of this structure:
++ *
++ * struct page_data {
++ *   uint64_t pages_array[OPTEE_MSG_NONCONTIG_PAGE_SIZE/sizeof(uint64_t) - 1];
++ *   uint64_t next_page_data;
++ * };
++ *
++ * Structure is designed to exactly fit into the page size
++ * OPTEE_MSG_NONCONTIG_PAGE_SIZE which is a standard 4KB page.
++ *
++ * The size of 4KB is chosen because this is the smallest page size for ARM
++ * architectures. If REE uses larger pages, it should divide them to 4KB ones.
++ */
++#define OPTEE_MSG_ATTR_NONCONTIG		BIT(9)
++
++/*
++ * Memory attributes for caching passed with temp memrefs. The actual value
++ * used is defined outside the message protocol with the exception of
++ * OPTEE_MSG_ATTR_CACHE_PREDEFINED which means the attributes already
++ * defined for the memory range should be used. If optee_smc.h is used as
++ * bearer of this protocol OPTEE_SMC_SHM_* is used for values.
++ */
++#define OPTEE_MSG_ATTR_CACHE_SHIFT		16
++#define OPTEE_MSG_ATTR_CACHE_MASK		GENMASK(2, 0)
++#define OPTEE_MSG_ATTR_CACHE_PREDEFINED		0
++
++/*
++ * Same values as TEE_LOGIN_* from TEE Internal API
++ */
++#define OPTEE_MSG_LOGIN_PUBLIC			0x00000000
++#define OPTEE_MSG_LOGIN_USER			0x00000001
++#define OPTEE_MSG_LOGIN_GROUP			0x00000002
++#define OPTEE_MSG_LOGIN_APPLICATION		0x00000004
++#define OPTEE_MSG_LOGIN_APPLICATION_USER	0x00000005
++#define OPTEE_MSG_LOGIN_APPLICATION_GROUP	0x00000006
++
++/*
++ * Page size used in non-contiguous buffer entries
++ */
++#define OPTEE_MSG_NONCONTIG_PAGE_SIZE		4096
++
++/**
++ * struct optee_msg_param_tmem - temporary memory reference parameter
++ * @buf_ptr:	Address of the buffer
++ * @size:	Size of the buffer
++ * @shm_ref:	Temporary shared memory reference, pointer to a struct tee_shm
++ *
++ * Secure and normal world communicates pointers as physical address
++ * instead of the virtual address. This is because secure and normal world
++ * have completely independent memory mapping. Normal world can even have a
++ * hypervisor which need to translate the guest physical address (AKA IPA
++ * in ARM documentation) to a real physical address before passing the
++ * structure to secure world.
++ */
++struct optee_msg_param_tmem {
++	u64 buf_ptr;
++	u64 size;
++	u64 shm_ref;
++};
++
++/**
++ * struct optee_msg_param_rmem - registered memory reference parameter
++ * @offs:	Offset into shared memory reference
++ * @size:	Size of the buffer
++ * @shm_ref:	Shared memory reference, pointer to a struct tee_shm
++ */
++struct optee_msg_param_rmem {
++	u64 offs;
++	u64 size;
++	u64 shm_ref;
++};
++
++/**
++ * struct optee_msg_param_value - opaque value parameter
++ *
++ * Value parameters are passed unchecked between normal and secure world.
++ */
++struct optee_msg_param_value {
++	u64 a;
++	u64 b;
++	u64 c;
++};
++
++/**
++ * struct optee_msg_param - parameter used together with struct optee_msg_arg
++ * @attr:	attributes
++ * @tmem:	parameter by temporary memory reference
++ * @rmem:	parameter by registered memory reference
++ * @value:	parameter by opaque value
++ *
++ * @attr & OPTEE_MSG_ATTR_TYPE_MASK indicates if tmem, rmem or value is used in
++ * the union. OPTEE_MSG_ATTR_TYPE_VALUE_* indicates value,
++ * OPTEE_MSG_ATTR_TYPE_TMEM_* indicates @tmem and
++ * OPTEE_MSG_ATTR_TYPE_RMEM_* indicates @rmem,
++ * OPTEE_MSG_ATTR_TYPE_NONE indicates that none of the members are used.
++ */
++struct optee_msg_param {
++	u64 attr;
++	union {
++		struct optee_msg_param_tmem tmem;
++		struct optee_msg_param_rmem rmem;
++		struct optee_msg_param_value value;
++	} u;
++};
++
++/**
++ * struct optee_msg_arg - call argument
++ * @cmd: Command, one of OPTEE_MSG_CMD_* or OPTEE_MSG_RPC_CMD_*
++ * @func: Trusted Application function, specific to the Trusted Application,
++ *	     used if cmd == OPTEE_MSG_CMD_INVOKE_COMMAND
++ * @session: In parameter for all OPTEE_MSG_CMD_* except
++ *	     OPTEE_MSG_CMD_OPEN_SESSION where it's an output parameter instead
++ * @cancel_id: Cancellation id, a unique value to identify this request
++ * @ret: return value
++ * @ret_origin: origin of the return value
++ * @num_params: number of parameters supplied to the OS Command
++ * @params: the parameters supplied to the OS Command
++ *
++ * All normal calls to Trusted OS uses this struct. If cmd requires further
++ * information than what these field holds it can be passed as a parameter
++ * tagged as meta (setting the OPTEE_MSG_ATTR_META bit in corresponding
++ * attrs field). All parameters tagged as meta has to come first.
++ *
++ * Temp memref parameters can be fragmented if supported by the Trusted OS
++ * (when optee_smc.h is bearer of this protocol this is indicated with
++ * OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM). If a logical memref parameter is
++ * fragmented then has all but the last fragment the
++ * OPTEE_MSG_ATTR_FRAGMENT bit set in attrs. Even if a memref is fragmented
++ * it will still be presented as a single logical memref to the Trusted
++ * Application.
++ */
++struct optee_msg_arg {
++	u32 cmd;
++	u32 func;
++	u32 session;
++	u32 cancel_id;
++	u32 pad;
++	u32 ret;
++	u32 ret_origin;
++	u32 num_params;
++
++	/* num_params tells the actual number of element in params */
++	struct optee_msg_param params[0];
++};
++
++/**
++ * OPTEE_MSG_GET_ARG_SIZE - return size of struct optee_msg_arg
++ *
++ * @num_params: Number of parameters embedded in the struct optee_msg_arg
++ *
++ * Returns the size of the struct optee_msg_arg together with the number
++ * of embedded parameters.
++ */
++#define OPTEE_MSG_GET_ARG_SIZE(num_params) \
++	(sizeof(struct optee_msg_arg) + \
++	 sizeof(struct optee_msg_param) * (num_params))
++
++/*****************************************************************************
++ * Part 2 - requests from normal world
++ *****************************************************************************/
++
++/*
++ * Return the following UID if using API specified in this file without
++ * further extensions:
++ * 384fb3e0-e7f8-11e3-af63-0002a5d5c51b.
++ * Represented in 4 32-bit words in OPTEE_MSG_UID_0, OPTEE_MSG_UID_1,
++ * OPTEE_MSG_UID_2, OPTEE_MSG_UID_3.
++ */
++#define OPTEE_MSG_UID_0			0x384fb3e0
++#define OPTEE_MSG_UID_1			0xe7f811e3
++#define OPTEE_MSG_UID_2			0xaf630002
++#define OPTEE_MSG_UID_3			0xa5d5c51b
++#define OPTEE_MSG_FUNCID_CALLS_UID	0xFF01
++
++/*
++ * Returns 2.0 if using API specified in this file without further
++ * extensions. Represented in 2 32-bit words in OPTEE_MSG_REVISION_MAJOR
++ * and OPTEE_MSG_REVISION_MINOR
++ */
++#define OPTEE_MSG_REVISION_MAJOR	2
++#define OPTEE_MSG_REVISION_MINOR	0
++#define OPTEE_MSG_FUNCID_CALLS_REVISION	0xFF03
++
++/*
++ * Get UUID of Trusted OS.
++ *
++ * Used by non-secure world to figure out which Trusted OS is installed.
++ * Note that returned UUID is the UUID of the Trusted OS, not of the API.
++ *
++ * Returns UUID in 4 32-bit words in the same way as
++ * OPTEE_MSG_FUNCID_CALLS_UID described above.
++ */
++#define OPTEE_MSG_OS_OPTEE_UUID_0	0x486178e0
++#define OPTEE_MSG_OS_OPTEE_UUID_1	0xe7f811e3
++#define OPTEE_MSG_OS_OPTEE_UUID_2	0xbc5e0002
++#define OPTEE_MSG_OS_OPTEE_UUID_3	0xa5d5c51b
++#define OPTEE_MSG_FUNCID_GET_OS_UUID	0x0000
++
++/*
++ * Get revision of Trusted OS.
++ *
++ * Used by non-secure world to figure out which version of the Trusted OS
++ * is installed. Note that the returned revision is the revision of the
++ * Trusted OS, not of the API.
++ *
++ * Returns revision in 2 32-bit words in the same way as
++ * OPTEE_MSG_CALLS_REVISION described above.
++ */
++#define OPTEE_MSG_FUNCID_GET_OS_REVISION	0x0001
++
++/*
++ * Do a secure call with struct optee_msg_arg as argument
++ * The OPTEE_MSG_CMD_* below defines what goes in struct optee_msg_arg::cmd
++ *
++ * OPTEE_MSG_CMD_OPEN_SESSION opens a session to a Trusted Application.
++ * The first two parameters are tagged as meta, holding two value
++ * parameters to pass the following information:
++ * param[0].u.value.a-b uuid of Trusted Application
++ * param[1].u.value.a-b uuid of Client
++ * param[1].u.value.c Login class of client OPTEE_MSG_LOGIN_*
++ *
++ * OPTEE_MSG_CMD_INVOKE_COMMAND invokes a command a previously opened
++ * session to a Trusted Application.  struct optee_msg_arg::func is Trusted
++ * Application function, specific to the Trusted Application.
++ *
++ * OPTEE_MSG_CMD_CLOSE_SESSION closes a previously opened session to
++ * Trusted Application.
++ *
++ * OPTEE_MSG_CMD_CANCEL cancels a currently invoked command.
++ *
++ * OPTEE_MSG_CMD_REGISTER_SHM registers a shared memory reference. The
++ * information is passed as:
++ * [in] param[0].attr			OPTEE_MSG_ATTR_TYPE_TMEM_INPUT
++ *					[| OPTEE_MSG_ATTR_FRAGMENT]
++ * [in] param[0].u.tmem.buf_ptr		physical address (of first fragment)
++ * [in] param[0].u.tmem.size		size (of first fragment)
++ * [in] param[0].u.tmem.shm_ref		holds shared memory reference
++ * ...
++ * The shared memory can optionally be fragmented, temp memrefs can follow
++ * each other with all but the last with the OPTEE_MSG_ATTR_FRAGMENT bit set.
++ *
++ * OPTEE_MSG_CMD_UNREGISTER_SHM unregisteres a previously registered shared
++ * memory reference. The information is passed as:
++ * [in] param[0].attr			OPTEE_MSG_ATTR_TYPE_RMEM_INPUT
++ * [in] param[0].u.rmem.shm_ref		holds shared memory reference
++ * [in] param[0].u.rmem.offs		0
++ * [in] param[0].u.rmem.size		0
++ */
++#define OPTEE_MSG_CMD_OPEN_SESSION	0
++#define OPTEE_MSG_CMD_INVOKE_COMMAND	1
++#define OPTEE_MSG_CMD_CLOSE_SESSION	2
++#define OPTEE_MSG_CMD_CANCEL		3
++#define OPTEE_MSG_CMD_REGISTER_SHM	4
++#define OPTEE_MSG_CMD_UNREGISTER_SHM	5
++#define OPTEE_MSG_FUNCID_CALL_WITH_ARG	0x0004
++
++/*****************************************************************************
++ * Part 3 - Requests from secure world, RPC
++ *****************************************************************************/
++
++/*
++ * All RPC is done with a struct optee_msg_arg as bearer of information,
++ * struct optee_msg_arg::arg holds values defined by OPTEE_MSG_RPC_CMD_* below
++ *
++ * RPC communication with tee-supplicant is reversed compared to normal
++ * client communication desribed above. The supplicant receives requests
++ * and sends responses.
++ */
++
++/*
++ * Load a TA into memory, defined in tee-supplicant
++ */
++#define OPTEE_MSG_RPC_CMD_LOAD_TA	0
++
++/*
++ * Reserved
++ */
++#define OPTEE_MSG_RPC_CMD_RPMB		1
++
++/*
++ * File system access, defined in tee-supplicant
++ */
++#define OPTEE_MSG_RPC_CMD_FS		2
++
++/*
++ * Get time
++ *
++ * Returns number of seconds and nano seconds since the Epoch,
++ * 1970-01-01 00:00:00 +0000 (UTC).
++ *
++ * [out] param[0].u.value.a	Number of seconds
++ * [out] param[0].u.value.b	Number of nano seconds.
++ */
++#define OPTEE_MSG_RPC_CMD_GET_TIME	3
++
++/*
++ * Wait queue primitive, helper for secure world to implement a wait queue.
++ *
++ * If secure world need to wait for a secure world mutex it issues a sleep
++ * request instead of spinning in secure world. Conversely is a wakeup
++ * request issued when a secure world mutex with a thread waiting thread is
++ * unlocked.
++ *
++ * Waiting on a key
++ * [in] param[0].u.value.a OPTEE_MSG_RPC_WAIT_QUEUE_SLEEP
++ * [in] param[0].u.value.b wait key
++ *
++ * Waking up a key
++ * [in] param[0].u.value.a OPTEE_MSG_RPC_WAIT_QUEUE_WAKEUP
++ * [in] param[0].u.value.b wakeup key
++ */
++#define OPTEE_MSG_RPC_CMD_WAIT_QUEUE	4
++#define OPTEE_MSG_RPC_WAIT_QUEUE_SLEEP	0
++#define OPTEE_MSG_RPC_WAIT_QUEUE_WAKEUP	1
++
++/*
++ * Suspend execution
++ *
++ * [in] param[0].value	.a number of milliseconds to suspend
++ */
++#define OPTEE_MSG_RPC_CMD_SUSPEND	5
++
++/*
++ * Allocate a piece of shared memory
++ *
++ * Shared memory can optionally be fragmented, to support that additional
++ * spare param entries are allocated to make room for eventual fragments.
++ * The spare param entries has .attr = OPTEE_MSG_ATTR_TYPE_NONE when
++ * unused. All returned temp memrefs except the last should have the
++ * OPTEE_MSG_ATTR_FRAGMENT bit set in the attr field.
++ *
++ * [in]  param[0].u.value.a		type of memory one of
++ *					OPTEE_MSG_RPC_SHM_TYPE_* below
++ * [in]  param[0].u.value.b		requested size
++ * [in]  param[0].u.value.c		required alignment
++ *
++ * [out] param[0].u.tmem.buf_ptr	physical address (of first fragment)
++ * [out] param[0].u.tmem.size		size (of first fragment)
++ * [out] param[0].u.tmem.shm_ref	shared memory reference
++ * ...
++ * [out] param[n].u.tmem.buf_ptr	physical address
++ * [out] param[n].u.tmem.size		size
++ * [out] param[n].u.tmem.shm_ref	shared memory reference (same value
++ *					as in param[n-1].u.tmem.shm_ref)
++ */
++#define OPTEE_MSG_RPC_CMD_SHM_ALLOC	6
++/* Memory that can be shared with a non-secure user space application */
++#define OPTEE_MSG_RPC_SHM_TYPE_APPL	0
++/* Memory only shared with non-secure kernel */
++#define OPTEE_MSG_RPC_SHM_TYPE_KERNEL	1
++
++/*
++ * Free shared memory previously allocated with OPTEE_MSG_RPC_CMD_SHM_ALLOC
++ *
++ * [in]  param[0].u.value.a		type of memory one of
++ *					OPTEE_MSG_RPC_SHM_TYPE_* above
++ * [in]  param[0].u.value.b		value of shared memory reference
++ *					returned in param[0].u.tmem.shm_ref
++ *					above
++ */
++#define OPTEE_MSG_RPC_CMD_SHM_FREE	7
++
++#endif /* _OPTEE_MSG_H */
+diff --git a/drivers/tee/optee/optee_msg_supplicant.h b/drivers/tee/optee/optee_msg_supplicant.h
+new file mode 100644
+index 0000000000..a0fb8063c8
+--- /dev/null
++++ b/drivers/tee/optee/optee_msg_supplicant.h
+@@ -0,0 +1,240 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright (c) 2016-2018, Linaro Limited
++ */
++
++#ifndef __OPTEE_MSG_SUPPLICANT_H
++#define __OPTEE_MSG_SUPPLICANT_H
++
++/*
++ * This file is based on
++ * https://github.com/OP-TEE/optee_os/blob/master/core/include/optee_msg_supplicant.h
++ * and may need to be updated when introducing new features.
++ */
++
++/*
++ * Load a TA into memory
++ */
++#define OPTEE_MSG_RPC_CMD_LOAD_TA	0
++
++/*
++ * Replay Protected Memory Block access
++ */
++#define OPTEE_MSG_RPC_CMD_RPMB		1
++
++/*
++ * File system access
++ */
++#define OPTEE_MSG_RPC_CMD_FS		2
++
++/*
++ * Define protocol for messages with .cmd == OPTEE_MSG_RPC_CMD_FS and first
++ * parameter has the attribute OPTEE_MSG_ATTR_TYPE_VALUE_INPUT.
++ */
++
++/*
++ * Open a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_OPEN
++ * [in]     param[1].u.tmem	a string holding the file name
++ * [out]    param[2].u.value.a	file descriptor of open file
++ */
++#define OPTEE_MRF_OPEN			0
++
++/*
++ * Create a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_CREATE
++ * [in]     param[1].u.tmem	a string holding the file name
++ * [out]    param[2].u.value.a	file descriptor of open file
++ */
++#define OPTEE_MRF_CREATE		1
++
++/*
++ * Close a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_CLOSE
++ * [in]     param[0].u.value.b	file descriptor of open file.
++ */
++#define OPTEE_MRF_CLOSE			2
++
++/*
++ * Read from a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_READ
++ * [in]     param[0].u.value.b	file descriptor of open file
++ * [in]     param[0].u.value.c	offset into file
++ * [out]    param[1].u.tmem	buffer to hold returned data
++ */
++#define OPTEE_MRF_READ			3
++
++/*
++ * Write to a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_WRITE
++ * [in]     param[0].u.value.b	file descriptor of open file
++ * [in]     param[0].u.value.c	offset into file
++ * [in]     param[1].u.tmem	buffer holding data to be written
++ */
++#define OPTEE_MRF_WRITE			4
++
++/*
++ * Truncate a file
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRF_TRUNCATE
++ * [in]     param[0].u.value.b	file descriptor of open file
++ * [in]     param[0].u.value.c	length of file.
++ */
++#define OPTEE_MRF_TRUNCATE		5
++
++/*
++ * Remove a file
++ *
++ * [in]  param[0].u.value.a	OPTEE_MRF_REMOVE
++ * [in]  param[1].u.tmem	a string holding the file name
++ */
++#define OPTEE_MRF_REMOVE		6
++
++/*
++ * Rename a file
++ *
++ * [in]  param[0].u.value.a	OPTEE_MRF_RENAME
++ * [in]  param[0].u.value.b	true if existing target should be removed
++ * [in]  param[1].u.tmem	a string holding the old file name
++ * [in]  param[2].u.tmem	a string holding the new file name
++ */
++#define OPTEE_MRF_RENAME		7
++
++/*
++ * Opens a directory for file listing
++ *
++ * [in]  param[0].u.value.a	OPTEE_MRF_OPENDIR
++ * [in]  param[1].u.tmem	a string holding the name of the directory
++ * [out] param[2].u.value.a	handle to open directory
++ */
++#define OPTEE_MRF_OPENDIR		8
++
++/*
++ * Closes a directory handle
++ *
++ * [in]  param[0].u.value.a	OPTEE_MRF_CLOSEDIR
++ * [in]  param[0].u.value.b	handle to open directory
++ */
++#define OPTEE_MRF_CLOSEDIR		9
++
++/*
++ * Read next file name of directory
++ *
++ *
++ * [in]  param[0].u.value.a	OPTEE_MRF_READDIR
++ * [in]  param[0].u.value.b	handle to open directory
++ * [out] param[1].u.tmem	a string holding the file name
++ */
++#define OPTEE_MRF_READDIR		10
++
++/*
++ * End of definitions for messages with .cmd == OPTEE_MSG_RPC_CMD_FS
++ */
++
++/*
++ * Command Ids 3, 4 and 5 of OPTEE_MSG_RPC_CMD_xxx macros are reserved for use
++ * by the kernel driver.
++ */
++
++/*
++ * Shared memory allocation
++ */
++#define OPTEE_MSG_RPC_CMD_SHM_ALLOC	6
++#define OPTEE_MSG_RPC_CMD_SHM_FREE	7
++
++/*
++ * Was OPTEE_MSG_RPC_CMD_SQL_FS, which isn't supported any longer
++ */
++#define OPTEE_MSG_RPC_CMD_SQL_FS_RESERVED	8
++
++/*
++ * GPROF support management commands
++ */
++#define OPTEE_MSG_RPC_CMD_GPROF		9
++
++/*
++ * Socket commands
++ */
++#define OPTEE_MSG_RPC_CMD_SOCKET	10
++
++/*
++ * Define protocol for messages with .cmd == OPTEE_MSG_RPC_CMD_SOCKET
++ */
++
++#define OPTEE_MRC_SOCKET_TIMEOUT_NONBLOCKING	0
++#define OPTEE_MRC_SOCKET_TIMEOUT_BLOCKING	0xffffffff
++
++/*
++ * Open socket
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_OPEN
++ * [in]     param[0].u.value.b	TA instance id
++ * [in]     param[1].u.value.a	server port number
++ * [in]     param[1].u.value.b	protocol, TEE_ISOCKET_PROTOCOLID_*
++ * [in]     param[1].u.value.c	ip version TEE_IP_VERSION_* from tee_ipsocket.h
++ * [in]     param[2].u.tmem	server address
++ * [out]    param[3].u.value.a	socket handle (32-bit)
++ */
++#define OPTEE_MRC_SOCKET_OPEN	0
++
++/*
++ * Close socket
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_CLOSE
++ * [in]     param[0].u.value.b	TA instance id
++ * [in]     param[0].u.value.c	socket handle
++ */
++#define OPTEE_MRC_SOCKET_CLOSE	1
++
++/*
++ * Close all sockets
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_CLOSE_ALL
++ * [in]     param[0].u.value.b	TA instance id
++ */
++#define OPTEE_MRC_SOCKET_CLOSE_ALL 2
++
++/*
++ * Send data on socket
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_SEND
++ * [in]     param[0].u.value.b	TA instance id
++ * [in]     param[0].u.value.c	socket handle
++ * [in]     param[1].u.tmem	buffer to transmit
++ * [in]     param[2].u.value.a	timeout ms or OPTEE_MRC_SOCKET_TIMEOUT_*
++ * [out]    param[2].u.value.b	number of transmitted bytes
++ */
++#define OPTEE_MRC_SOCKET_SEND	3
++
++/*
++ * Receive data on socket
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_RECV
++ * [in]     param[0].u.value.b	TA instance id
++ * [in]     param[0].u.value.c	socket handle
++ * [out]    param[1].u.tmem	buffer to receive
++ * [in]     param[2].u.value.a	timeout ms or OPTEE_MRC_SOCKET_TIMEOUT_*
++ */
++#define OPTEE_MRC_SOCKET_RECV	4
++
++/*
++ * Perform IOCTL on socket
++ *
++ * [in]     param[0].u.value.a	OPTEE_MRC_SOCKET_IOCTL
++ * [in]     param[0].u.value.b	TA instance id
++ * [in]     param[0].u.value.c	socket handle
++ * [in/out] param[1].u.tmem	buffer
++ * [in]     param[2].u.value.a	ioctl command
++ */
++#define OPTEE_MRC_SOCKET_IOCTL	5
++
++/*
++ * End of definitions for messages with .cmd == OPTEE_MSG_RPC_CMD_SOCKET
++ */
++
++#endif /* __OPTEE_MSG_SUPPLICANT_H */
+diff --git a/drivers/tee/optee/optee_private.h b/drivers/tee/optee/optee_private.h
+new file mode 100644
+index 0000000000..35adb83afc
+--- /dev/null
++++ b/drivers/tee/optee/optee_private.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (c) 2018 Linaro Limited
++ */
++
++#ifndef __OPTEE_PRIVATE_H
++#define __OPTEE_PRIVATE_H
++
++void *optee_alloc_and_init_page_list(void *buf, ulong len, u64 *phys_buf_ptr);
++void optee_suppl_cmd(struct udevice *dev, void *shm, void **page_list);
++
++#endif /* __OPTEE_PRIVATE_H */
+diff --git a/drivers/tee/optee/optee_smc.h b/drivers/tee/optee/optee_smc.h
+new file mode 100644
+index 0000000000..4d643b2599
+--- /dev/null
++++ b/drivers/tee/optee/optee_smc.h
+@@ -0,0 +1,450 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++/*
++ * Copyright (c) 2015-2018, Linaro Limited
++ */
++
++#ifndef OPTEE_SMC_H
++#define OPTEE_SMC_H
++
++#include <linux/arm-smccc.h>
++#include <linux/bitops.h>
++
++/*
++ * This file is based on
++ * https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/include/sm/optee_smc.h
++ * and may need to be updated when introducing new features.
++ */
++
++#define OPTEE_SMC_STD_CALL_VAL(func_num) \
++	ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL, ARM_SMCCC_SMC_32, \
++			   ARM_SMCCC_OWNER_TRUSTED_OS, (func_num))
++#define OPTEE_SMC_FAST_CALL_VAL(func_num) \
++	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, \
++			   ARM_SMCCC_OWNER_TRUSTED_OS, (func_num))
++
++/*
++ * Function specified by SMC Calling convention.
++ */
++#define OPTEE_SMC_FUNCID_CALLS_COUNT	0xFF00
++#define OPTEE_SMC_CALLS_COUNT \
++	ARM_SMCCC_CALL_VAL(OPTEE_SMC_FAST_CALL, SMCCC_SMC_32, \
++			   SMCCC_OWNER_TRUSTED_OS_END, \
++			   OPTEE_SMC_FUNCID_CALLS_COUNT)
++
++/*
++ * Normal cached memory (write-back), shareable for SMP systems and not
++ * shareable for UP systems.
++ */
++#define OPTEE_SMC_SHM_CACHED		1
++
++/*
++ * a0..a7 is used as register names in the descriptions below, on arm32
++ * that translates to r0..r7 and on arm64 to w0..w7. In both cases it's
++ * 32-bit registers.
++ */
++
++/*
++ * Function specified by SMC Calling convention
++ *
++ * Return one of the following UIDs if using API specified in this file
++ * without further extentions:
++ * 65cb6b93-af0c-4617-8ed6-644a8d1140f8
++ * see also OPTEE_SMC_UID_* in optee_msg.h
++ */
++#define OPTEE_SMC_FUNCID_CALLS_UID OPTEE_MSG_FUNCID_CALLS_UID
++#define OPTEE_SMC_CALLS_UID \
++	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, \
++			   ARM_SMCCC_OWNER_TRUSTED_OS_END, \
++			   OPTEE_SMC_FUNCID_CALLS_UID)
++
++/*
++ * Function specified by SMC Calling convention
++ *
++ * Returns 2.0 if using API specified in this file without further extentions.
++ * see also OPTEE_MSG_REVISION_* in optee_msg.h
++ */
++#define OPTEE_SMC_FUNCID_CALLS_REVISION OPTEE_MSG_FUNCID_CALLS_REVISION
++#define OPTEE_SMC_CALLS_REVISION \
++	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_32, \
++			   ARM_SMCCC_OWNER_TRUSTED_OS_END, \
++			   OPTEE_SMC_FUNCID_CALLS_REVISION)
++
++struct optee_smc_calls_revision_result {
++	unsigned long major;
++	unsigned long minor;
++	unsigned long reserved0;
++	unsigned long reserved1;
++};
++
++/*
++ * Get UUID of Trusted OS.
++ *
++ * Used by non-secure world to figure out which Trusted OS is installed.
++ * Note that returned UUID is the UUID of the Trusted OS, not of the API.
++ *
++ * Returns UUID in a0-4 in the same way as OPTEE_SMC_CALLS_UID
++ * described above.
++ */
++#define OPTEE_SMC_FUNCID_GET_OS_UUID OPTEE_MSG_FUNCID_GET_OS_UUID
++#define OPTEE_SMC_CALL_GET_OS_UUID \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_OS_UUID)
++
++/*
++ * Get revision of Trusted OS.
++ *
++ * Used by non-secure world to figure out which version of the Trusted OS
++ * is installed. Note that the returned revision is the revision of the
++ * Trusted OS, not of the API.
++ *
++ * Returns revision in a0-1 in the same way as OPTEE_SMC_CALLS_REVISION
++ * described above. May optionally return a 32-bit build identifier in a2,
++ * with zero meaning unspecified.
++ */
++#define OPTEE_SMC_FUNCID_GET_OS_REVISION OPTEE_MSG_FUNCID_GET_OS_REVISION
++#define OPTEE_SMC_CALL_GET_OS_REVISION \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_OS_REVISION)
++
++struct optee_smc_call_get_os_revision_result {
++	unsigned long major;
++	unsigned long minor;
++	unsigned long build_id;
++	unsigned long reserved1;
++};
++
++/*
++ * Call with struct optee_msg_arg as argument
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC*CALL_WITH_ARG
++ * a1	Upper 32bit of a 64bit physical pointer to a struct optee_msg_arg
++ * a2	Lower 32bit of a 64bit physical pointer to a struct optee_msg_arg
++ * a3	Cache settings, not used if physical pointer is in a predefined shared
++ *	memory area else per OPTEE_SMC_SHM_*
++ * a4-6	Not used
++ * a7	Hypervisor Client ID register
++ *
++ * Normal return register usage:
++ * a0	Return value, OPTEE_SMC_RETURN_*
++ * a1-3	Not used
++ * a4-7	Preserved
++ *
++ * OPTEE_SMC_RETURN_ETHREAD_LIMIT return register usage:
++ * a0	Return value, OPTEE_SMC_RETURN_ETHREAD_LIMIT
++ * a1-3	Preserved
++ * a4-7	Preserved
++ *
++ * RPC return register usage:
++ * a0	Return value, OPTEE_SMC_RETURN_IS_RPC(val)
++ * a1-2	RPC parameters
++ * a3-7	Resume information, must be preserved
++ *
++ * Possible return values:
++ * OPTEE_SMC_RETURN_UNKNOWN_FUNCTION	Trusted OS does not recognize this
++ *					function.
++ * OPTEE_SMC_RETURN_OK			Call completed, result updated in
++ *					the previously supplied struct
++ *					optee_msg_arg.
++ * OPTEE_SMC_RETURN_ETHREAD_LIMIT	Number of Trusted OS threads exceeded,
++ *					try again later.
++ * OPTEE_SMC_RETURN_EBADADDR		Bad physcial pointer to struct
++ *					optee_msg_arg.
++ * OPTEE_SMC_RETURN_EBADCMD		Bad/unknown cmd in struct optee_msg_arg
++ * OPTEE_SMC_RETURN_IS_RPC()		Call suspended by RPC call to normal
++ *					world.
++ */
++#define OPTEE_SMC_FUNCID_CALL_WITH_ARG OPTEE_MSG_FUNCID_CALL_WITH_ARG
++#define OPTEE_SMC_CALL_WITH_ARG \
++	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_ARG)
++
++/*
++ * Get Shared Memory Config
++ *
++ * Returns the Secure/Non-secure shared memory config.
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC_GET_SHM_CONFIG
++ * a1-6	Not used
++ * a7	Hypervisor Client ID register
++ *
++ * Have config return register usage:
++ * a0	OPTEE_SMC_RETURN_OK
++ * a1	Physical address of start of SHM
++ * a2	Size of of SHM
++ * a3	Cache settings of memory, as defined by the
++ *	OPTEE_SMC_SHM_* values above
++ * a4-7	Preserved
++ *
++ * Not available register usage:
++ * a0	OPTEE_SMC_RETURN_ENOTAVAIL
++ * a1-3 Not used
++ * a4-7	Preserved
++ */
++#define OPTEE_SMC_FUNCID_GET_SHM_CONFIG	7
++#define OPTEE_SMC_GET_SHM_CONFIG \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_SHM_CONFIG)
++
++struct optee_smc_get_shm_config_result {
++	unsigned long status;
++	unsigned long start;
++	unsigned long size;
++	unsigned long settings;
++};
++
++/*
++ * Exchanges capabilities between normal world and secure world
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC_EXCHANGE_CAPABILITIES
++ * a1	bitfield of normal world capabilities OPTEE_SMC_NSEC_CAP_*
++ * a2-6	Not used
++ * a7	Hypervisor Client ID register
++ *
++ * Normal return register usage:
++ * a0	OPTEE_SMC_RETURN_OK
++ * a1	bitfield of secure world capabilities OPTEE_SMC_SEC_CAP_*
++ * a2-7	Preserved
++ *
++ * Error return register usage:
++ * a0	OPTEE_SMC_RETURN_ENOTAVAIL, can't use the capabilities from normal world
++ * a1	bitfield of secure world capabilities OPTEE_SMC_SEC_CAP_*
++ * a2-7 Preserved
++ */
++/* Normal world works as a uniprocessor system */
++#define OPTEE_SMC_NSEC_CAP_UNIPROCESSOR		BIT(0)
++/* Secure world has reserved shared memory for normal world to use */
++#define OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM	BIT(0)
++/* Secure world can communicate via previously unregistered shared memory */
++#define OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM	BIT(1)
++
++/*
++ * Secure world supports commands "register/unregister shared memory",
++ * secure world accepts command buffers located in any parts of non-secure RAM
++ */
++#define OPTEE_SMC_SEC_CAP_DYNAMIC_SHM		BIT(2)
++
++#define OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES	9
++#define OPTEE_SMC_EXCHANGE_CAPABILITIES \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES)
++
++struct optee_smc_exchange_capabilities_result {
++	unsigned long status;
++	unsigned long capabilities;
++	unsigned long reserved0;
++	unsigned long reserved1;
++};
++
++/*
++ * Disable and empties cache of shared memory objects
++ *
++ * Secure world can cache frequently used shared memory objects, for
++ * example objects used as RPC arguments. When secure world is idle this
++ * function returns one shared memory reference to free. To disable the
++ * cache and free all cached objects this function has to be called until
++ * it returns OPTEE_SMC_RETURN_ENOTAVAIL.
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC_DISABLE_SHM_CACHE
++ * a1-6	Not used
++ * a7	Hypervisor Client ID register
++ *
++ * Normal return register usage:
++ * a0	OPTEE_SMC_RETURN_OK
++ * a1	Upper 32bit of a 64bit Shared memory cookie
++ * a2	Lower 32bit of a 64bit Shared memory cookie
++ * a3-7	Preserved
++ *
++ * Cache empty return register usage:
++ * a0	OPTEE_SMC_RETURN_ENOTAVAIL
++ * a1-7	Preserved
++ *
++ * Not idle return register usage:
++ * a0	OPTEE_SMC_RETURN_EBUSY
++ * a1-7	Preserved
++ */
++#define OPTEE_SMC_FUNCID_DISABLE_SHM_CACHE	10
++#define OPTEE_SMC_DISABLE_SHM_CACHE \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_DISABLE_SHM_CACHE)
++
++struct optee_smc_disable_shm_cache_result {
++	unsigned long status;
++	unsigned long shm_upper32;
++	unsigned long shm_lower32;
++	unsigned long reserved0;
++};
++
++/*
++ * Enable cache of shared memory objects
++ *
++ * Secure world can cache frequently used shared memory objects, for
++ * example objects used as RPC arguments. When secure world is idle this
++ * function returns OPTEE_SMC_RETURN_OK and the cache is enabled. If
++ * secure world isn't idle OPTEE_SMC_RETURN_EBUSY is returned.
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC_ENABLE_SHM_CACHE
++ * a1-6	Not used
++ * a7	Hypervisor Client ID register
++ *
++ * Normal return register usage:
++ * a0	OPTEE_SMC_RETURN_OK
++ * a1-7	Preserved
++ *
++ * Not idle return register usage:
++ * a0	OPTEE_SMC_RETURN_EBUSY
++ * a1-7	Preserved
++ */
++#define OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE	11
++#define OPTEE_SMC_ENABLE_SHM_CACHE \
++	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE)
++
++/*
++ * Resume from RPC (for example after processing a foreign interrupt)
++ *
++ * Call register usage:
++ * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC
++ * a1-3	Value of a1-3 when OPTEE_SMC_CALL_WITH_ARG returned
++ *	OPTEE_SMC_RETURN_RPC in a0
++ *
++ * Return register usage is the same as for OPTEE_SMC_*CALL_WITH_ARG above.
++ *
++ * Possible return values
++ * OPTEE_SMC_RETURN_UNKNOWN_FUNCTION	Trusted OS does not recognize this
++ *					function.
++ * OPTEE_SMC_RETURN_OK			Original call completed, result
++ *					updated in the previously supplied.
++ *					struct optee_msg_arg
++ * OPTEE_SMC_RETURN_RPC			Call suspended by RPC call to normal
++ *					world.
++ * OPTEE_SMC_RETURN_ERESUME		Resume failed, the opaque resume
++ *					information was corrupt.
++ */
++#define OPTEE_SMC_FUNCID_RETURN_FROM_RPC	3
++#define OPTEE_SMC_CALL_RETURN_FROM_RPC \
++	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_RETURN_FROM_RPC)
++
++#define OPTEE_SMC_RETURN_RPC_PREFIX_MASK	0xFFFF0000
++#define OPTEE_SMC_RETURN_RPC_PREFIX		0xFFFF0000
++#define OPTEE_SMC_RETURN_RPC_FUNC_MASK		0x0000FFFF
++
++#define OPTEE_SMC_RETURN_GET_RPC_FUNC(ret) \
++	((ret) & OPTEE_SMC_RETURN_RPC_FUNC_MASK)
++
++#define OPTEE_SMC_RPC_VAL(func)		((func) | OPTEE_SMC_RETURN_RPC_PREFIX)
++
++/*
++ * Allocate memory for RPC parameter passing. The memory is used to hold a
++ * struct optee_msg_arg.
++ *
++ * "Call" register usage:
++ * a0	This value, OPTEE_SMC_RETURN_RPC_ALLOC
++ * a1	Size in bytes of required argument memory
++ * a2	Not used
++ * a3	Resume information, must be preserved
++ * a4-5	Not used
++ * a6-7	Resume information, must be preserved
++ *
++ * "Return" register usage:
++ * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
++ * a1	Upper 32bits of 64bit physical pointer to allocated
++ *	memory, (a1 == 0 && a2 == 0) if size was 0 or if memory can't
++ *	be allocated.
++ * a2	Lower 32bits of 64bit physical pointer to allocated
++ *	memory, (a1 == 0 && a2 == 0) if size was 0 or if memory can't
++ *	be allocated
++ * a3	Preserved
++ * a4	Upper 32bits of 64bit Shared memory cookie used when freeing
++ *	the memory or doing an RPC
++ * a5	Lower 32bits of 64bit Shared memory cookie used when freeing
++ *	the memory or doing an RPC
++ * a6-7	Preserved
++ */
++#define OPTEE_SMC_RPC_FUNC_ALLOC	0
++#define OPTEE_SMC_RETURN_RPC_ALLOC \
++	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_ALLOC)
++
++/*
++ * Free memory previously allocated by OPTEE_SMC_RETURN_RPC_ALLOC
++ *
++ * "Call" register usage:
++ * a0	This value, OPTEE_SMC_RETURN_RPC_FREE
++ * a1	Upper 32bits of 64bit shared memory cookie belonging to this
++ *	argument memory
++ * a2	Lower 32bits of 64bit shared memory cookie belonging to this
++ *	argument memory
++ * a3-7	Resume information, must be preserved
++ *
++ * "Return" register usage:
++ * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
++ * a1-2	Not used
++ * a3-7	Preserved
++ */
++#define OPTEE_SMC_RPC_FUNC_FREE		2
++#define OPTEE_SMC_RETURN_RPC_FREE \
++	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_FREE)
++
++/*
++ * Deliver foreign interrupt to normal world.
++ *
++ * "Call" register usage:
++ * a0	OPTEE_SMC_RETURN_RPC_FOREIGN_INTR
++ * a1-7	Resume information, must be preserved
++ *
++ * "Return" register usage:
++ * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
++ * a1-7	Preserved
++ */
++#define OPTEE_SMC_RPC_FUNC_FOREIGN_INTR		4
++#define OPTEE_SMC_RETURN_RPC_FOREIGN_INTR \
++	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_FOREIGN_INTR)
++
++/*
++ * Do an RPC request. The supplied struct optee_msg_arg tells which
++ * request to do and the parameters for the request. The following fields
++ * are used (the rest are unused):
++ * - cmd		the Request ID
++ * - ret		return value of the request, filled in by normal world
++ * - num_params		number of parameters for the request
++ * - params		the parameters
++ * - param_attrs	attributes of the parameters
++ *
++ * "Call" register usage:
++ * a0	OPTEE_SMC_RETURN_RPC_CMD
++ * a1	Upper 32bit of a 64bit Shared memory cookie holding a
++ *	struct optee_msg_arg, must be preserved, only the data should
++ *	be updated
++ * a2	Lower 32bit of a 64bit Shared memory cookie holding a
++ *	struct optee_msg_arg, must be preserved, only the data should
++ *	be updated
++ * a3-7	Resume information, must be preserved
++ *
++ * "Return" register usage:
++ * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
++ * a1-2	Not used
++ * a3-7	Preserved
++ */
++#define OPTEE_SMC_RPC_FUNC_CMD		5
++#define OPTEE_SMC_RETURN_RPC_CMD \
++	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_CMD)
++
++/* Returned in a0 */
++#define OPTEE_SMC_RETURN_UNKNOWN_FUNCTION 0xFFFFFFFF
++
++/* Returned in a0 only from Trusted OS functions */
++#define OPTEE_SMC_RETURN_OK		0x0
++#define OPTEE_SMC_RETURN_ETHREAD_LIMIT	0x1
++#define OPTEE_SMC_RETURN_EBUSY		0x2
++#define OPTEE_SMC_RETURN_ERESUME	0x3
++#define OPTEE_SMC_RETURN_EBADADDR	0x4
++#define OPTEE_SMC_RETURN_EBADCMD	0x5
++#define OPTEE_SMC_RETURN_ENOMEM		0x6
++#define OPTEE_SMC_RETURN_ENOTAVAIL	0x7
++#define OPTEE_SMC_RETURN_IS_RPC(ret)	__optee_smc_return_is_rpc((ret))
++
++static inline bool __optee_smc_return_is_rpc(u32 ret)
++{
++	return ret != OPTEE_SMC_RETURN_UNKNOWN_FUNCTION &&
++	       (ret & OPTEE_SMC_RETURN_RPC_PREFIX_MASK) ==
++			OPTEE_SMC_RETURN_RPC_PREFIX;
++}
++
++#endif /* OPTEE_SMC_H */
+diff --git a/drivers/tee/optee/supplicant.c b/drivers/tee/optee/supplicant.c
+new file mode 100644
+index 0000000000..2239b1bf7b
+--- /dev/null
++++ b/drivers/tee/optee/supplicant.c
+@@ -0,0 +1,93 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright (c) 2018, Linaro Limited
++ */
++
++#include <common.h>
++#include <log.h>
++#include <tee.h>
++#include <linux/types.h>
++
++#include "optee_msg.h"
++#include "optee_msg_supplicant.h"
++#include "optee_private.h"
++#include "optee_smc.h"
++
++static void cmd_shm_alloc(struct udevice *dev, struct optee_msg_arg *arg,
++			  void **page_list)
++{
++	int rc;
++	struct tee_shm *shm;
++	void *pl;
++	u64 ph_ptr;
++
++	arg->ret_origin = TEE_ORIGIN_COMMS;
++
++	if (arg->num_params != 1 ||
++	    arg->params[0].attr != OPTEE_MSG_ATTR_TYPE_VALUE_INPUT) {
++		arg->ret = TEE_ERROR_BAD_PARAMETERS;
++		return;
++	}
++
++	rc = __tee_shm_add(dev, 0, NULL, arg->params[0].u.value.b,
++			   TEE_SHM_REGISTER | TEE_SHM_ALLOC, &shm);
++	if (rc) {
++		if (rc == -ENOMEM)
++			arg->ret = TEE_ERROR_OUT_OF_MEMORY;
++		else
++			arg->ret = TEE_ERROR_GENERIC;
++		return;
++	}
++
++	pl = optee_alloc_and_init_page_list(shm->addr, shm->size, &ph_ptr);
++	if (!pl) {
++		arg->ret = TEE_ERROR_OUT_OF_MEMORY;
++		tee_shm_free(shm);
++		return;
++	}
++
++	*page_list = pl;
++	arg->params[0].attr = OPTEE_MSG_ATTR_TYPE_TMEM_OUTPUT |
++			      OPTEE_MSG_ATTR_NONCONTIG;
++	arg->params[0].u.tmem.buf_ptr = ph_ptr;
++	arg->params[0].u.tmem.size = shm->size;
++	arg->params[0].u.tmem.shm_ref = (ulong)shm;
++	arg->ret = TEE_SUCCESS;
++}
++
++static void cmd_shm_free(struct optee_msg_arg *arg)
++{
++	arg->ret_origin = TEE_ORIGIN_COMMS;
++
++	if (arg->num_params != 1 ||
++	    arg->params[0].attr != OPTEE_MSG_ATTR_TYPE_VALUE_INPUT) {
++		arg->ret = TEE_ERROR_BAD_PARAMETERS;
++		return;
++	}
++
++	tee_shm_free((struct tee_shm *)(ulong)arg->params[0].u.value.b);
++	arg->ret = TEE_SUCCESS;
++}
++
++void optee_suppl_cmd(struct udevice *dev, struct tee_shm *shm_arg,
++		     void **page_list)
++{
++	struct optee_msg_arg *arg = shm_arg->addr;
++
++	switch (arg->cmd) {
++	case OPTEE_MSG_RPC_CMD_SHM_ALLOC:
++		cmd_shm_alloc(dev, arg, page_list);
++		break;
++	case OPTEE_MSG_RPC_CMD_SHM_FREE:
++		cmd_shm_free(arg);
++		break;
++	case OPTEE_MSG_RPC_CMD_FS:
++		debug("OPTEE_MSG_RPC_CMD_FS not implemented\n");
++		arg->ret = TEE_ERROR_NOT_IMPLEMENTED;
++		break;
++	default:
++		arg->ret = TEE_ERROR_NOT_IMPLEMENTED;
++	}
++
++	arg->ret_origin = TEE_ORIGIN_COMMS;
++}
+-- 
+2.17.1
+
