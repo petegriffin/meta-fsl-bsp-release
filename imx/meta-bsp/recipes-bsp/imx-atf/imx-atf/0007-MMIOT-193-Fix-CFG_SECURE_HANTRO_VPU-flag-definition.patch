@@ -1,0 +1,38 @@
+From f3f091199943afd3439eb2a1b59a14d1898f3b4c Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 19 Nov 2019 11:16:08 +0100
+Subject: [PATCH 7/9] MMIOT-193: Fix CFG_SECURE_HANTRO_VPU flag definition
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ plat/imx/imx8mm/platform.mk | 2 +-
+ plat/imx/imx8mq/platform.mk | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/plat/imx/imx8mm/platform.mk b/plat/imx/imx8mm/platform.mk
+index 3e326c419..66619070f 100644
+--- a/plat/imx/imx8mm/platform.mk
++++ b/plat/imx/imx8mm/platform.mk
+@@ -71,6 +71,6 @@ $(eval $(call add_define,DECODED_BUFFER_LEN))
+ endif
+ endif
+ 
+-ifneq (${CFG_SECURE_HANTRO_VPU},)
++ifeq (${CFG_SECURE_HANTRO_VPU},y)
+ $(eval $(call add_define,CFG_SECURE_HANTRO_VPU))
+ endif
+diff --git a/plat/imx/imx8mq/platform.mk b/plat/imx/imx8mq/platform.mk
+index 424ec51fc..21eeec0cd 100644
+--- a/plat/imx/imx8mq/platform.mk
++++ b/plat/imx/imx8mq/platform.mk
+@@ -74,6 +74,6 @@ $(eval $(call add_define,DECODED_BUFFER_LEN))
+ endif
+ endif
+ 
+-ifneq (${CFG_SECURE_HANTRO_VPU},)
++ifeq (${CFG_SECURE_HANTRO_VPU},y)
+ $(eval $(call add_define,CFG_SECURE_HANTRO_VPU))
+ endif
+-- 
+2.17.1
+

@@ -1,0 +1,36 @@
+From 637bf82b526948308cd98850b954d8f021de056f Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Tue, 5 Nov 2019 08:35:17 +0100
+Subject: [PATCH 5/9] MMIOT-193 : Setup CSU: VPU access in TZ only
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ plat/imx/imx8mq/imx8mq_bl31_setup.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/plat/imx/imx8mq/imx8mq_bl31_setup.c b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+index 5bfd7c2c0..010de4945 100644
+--- a/plat/imx/imx8mq/imx8mq_bl31_setup.c
++++ b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+@@ -243,11 +243,13 @@ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
+ #endif
+ 
+ #if !defined (CSU_RDC_TEST)
+-	int i;
+-	/* enable CSU NS access permission */
+-	for (i = 0; i < 64; i++) {
+-		mmio_write_32(0x303e0000 + i * 4, 0xffffffff);
+-	}
++
++	csu_set_default_slaves_modes();
++
++#ifdef CFG_SECURE_HANTRO_VPU
++	csu_set_slave_index_mode(CSU_CSLn_VPU_SEC,CSU_SSRW | CSU_SURW, 1);
++#endif
++
+ #endif
+ 
+ 	/* Dealloc part 0 and 2 with current DID */
+-- 
+2.17.1
+

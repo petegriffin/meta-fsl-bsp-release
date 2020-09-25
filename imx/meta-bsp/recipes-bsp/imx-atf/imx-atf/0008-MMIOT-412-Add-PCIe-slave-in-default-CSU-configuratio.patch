@@ -1,0 +1,25 @@
+From 13782629ae0fbff670052a042becab1cb04c5544 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 6 Jan 2020 18:16:47 +0100
+Subject: [PATCH 8/9] MMIOT-412 Add PCIe slave in default CSU configuration
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ plat/imx/common/imx8m/imx_csu.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/plat/imx/common/imx8m/imx_csu.c b/plat/imx/common/imx8m/imx_csu.c
+index 1bb89d71d..f0071a663 100644
+--- a/plat/imx/common/imx8m/imx_csu.c
++++ b/plat/imx/common/imx8m/imx_csu.c
+@@ -127,6 +127,7 @@ static struct csu_slave_conf csu_def_csl_conf[] = {
+ 	{CSU_CSLn_M4_SEC, CSU_RW, 0},
+ 	{CSU_CSLn_QSPI_SEC, CSU_RW, 0},
+ 	{CSU_CSLn_GPU_EXSC, CSU_RW, 0},
++	{CSU_CSLn_PCIE, CSU_RW, 0},
+ 	{CSU_CSLn_Internal1, CSU_RW, 0},
+ 	{CSU_CSLn_Internal2, CSU_RW, 0},
+ 	{CSU_CSLn_Internal3, CSU_RW, 0},
+-- 
+2.17.1
+

@@ -1,0 +1,66 @@
+From 0c0eed08c5d2a0646d38834e46cdcd610e24cce0 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 23 Oct 2019 16:40:31 +0200
+Subject: [PATCH 4/9] MMIOT-191: Do not prevent VPU to decode in CMA
+
+When Secure Hantro VPU is enabled, allow decoding into non protected memory
+---
+ plat/imx/imx8mm/imx8mm_bl31_setup.c | 2 +-
+ plat/imx/imx8mm/platform.mk         | 4 ++++
+ plat/imx/imx8mq/imx8mq_bl31_setup.c | 2 +-
+ plat/imx/imx8mq/platform.mk         | 4 ++++
+ 4 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/plat/imx/imx8mm/imx8mm_bl31_setup.c b/plat/imx/imx8mm/imx8mm_bl31_setup.c
+index aa1c336e2..f6cc4b669 100644
+--- a/plat/imx/imx8mm/imx8mm_bl31_setup.c
++++ b/plat/imx/imx8mm/imx8mm_bl31_setup.c
+@@ -95,7 +95,7 @@ static void bl31_imx_rdc_setup(void)
+ 	 * programming rdc region for i.mx8mq.
+ 	 */
+ 
+-#ifdef DECRYPTED_BUFFER_START
++#if defined(DECRYPTED_BUFFER_START) && !defined(CFG_SECURE_HANTRO_VPU)
+ 	/* Domain 2 no write access to memory region below decrypted video */
+ 	/* Prevent VPU to decode outside secure decoded buffer */
+ 	mmio_write_32((uintptr_t)&(imx_rdc->mem_region[2].mrsa), 0);
+diff --git a/plat/imx/imx8mm/platform.mk b/plat/imx/imx8mm/platform.mk
+index d2c65d96f..3e326c419 100644
+--- a/plat/imx/imx8mm/platform.mk
++++ b/plat/imx/imx8mm/platform.mk
+@@ -70,3 +70,7 @@ ifneq (${DECODED_BUFFER_LEN},)
+ $(eval $(call add_define,DECODED_BUFFER_LEN))
+ endif
+ endif
++
++ifneq (${CFG_SECURE_HANTRO_VPU},)
++$(eval $(call add_define,CFG_SECURE_HANTRO_VPU))
++endif
+diff --git a/plat/imx/imx8mq/imx8mq_bl31_setup.c b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+index dd4b4277b..5bfd7c2c0 100644
+--- a/plat/imx/imx8mq/imx8mq_bl31_setup.c
++++ b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+@@ -111,7 +111,7 @@ static void bl31_imx_rdc_setup(void)
+ 	 * programming rdc region for i.mx8mq.
+ 	 */
+ 
+-#ifdef DECRYPTED_BUFFER_START
++#if defined(DECRYPTED_BUFFER_START) && !defined(CFG_SECURE_HANTRO_VPU)
+ 	/* Domain 2 no write access to memory region below decrypted video */
+ 	/* Prevent VPU to decode outside secure decoded buffer */
+ 	mmio_write_32((uintptr_t)&(imx_rdc->mem_region[2].mrsa), 0);
+diff --git a/plat/imx/imx8mq/platform.mk b/plat/imx/imx8mq/platform.mk
+index 917eebee1..424ec51fc 100644
+--- a/plat/imx/imx8mq/platform.mk
++++ b/plat/imx/imx8mq/platform.mk
+@@ -73,3 +73,7 @@ ifneq (${DECODED_BUFFER_LEN},)
+ $(eval $(call add_define,DECODED_BUFFER_LEN))
+ endif
+ endif
++
++ifneq (${CFG_SECURE_HANTRO_VPU},)
++$(eval $(call add_define,CFG_SECURE_HANTRO_VPU))
++endif
+-- 
+2.17.1
+

@@ -1,0 +1,105 @@
+From 53bef0b6ea521fc49c9b143d9543443ba6ea2280 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 13 Nov 2019 10:34:04 +0100
+Subject: [PATCH 6/9] MMIOT-193: imx8mm csu config updated with Secure VPU
+ config
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ plat/imx/imx8mm/imx8mm_bl31_setup.c |  9 ++++++++-
+ plat/imx/imx8mq/imx8mq_bl31_setup.c | 24 +++++++++++++-----------
+ 2 files changed, 21 insertions(+), 12 deletions(-)
+
+diff --git a/plat/imx/imx8mm/imx8mm_bl31_setup.c b/plat/imx/imx8mm/imx8mm_bl31_setup.c
+index f6cc4b669..f5e13e81d 100644
+--- a/plat/imx/imx8mm/imx8mm_bl31_setup.c
++++ b/plat/imx/imx8mm/imx8mm_bl31_setup.c
+@@ -79,6 +79,13 @@ static struct rdc_mda_conf masters_config[] = {
+ };
+ #endif
+ 
++static struct csu_slave_conf csu_csl_conf[] = {
++	{CSU_CSLn_CAAM, CSU_SURW|CSU_SSRW, 1},
++#ifdef CFG_SECURE_HANTRO_VPU
++	{CSU_CSLn_VPU_SEC, CSU_SURW|CSU_SSRW, 1},
++#endif
++};
++
+ /* set RDC settings */
+ static void bl31_imx_rdc_setup(void)
+ {
+@@ -105,7 +112,7 @@ static void bl31_imx_rdc_setup(void)
+ 
+ #ifdef DECRYPTED_BUFFER_END
+ 	NOTICE("RDC setup memory_region[0] decrypted buffer DID0 W DID2 R/W\n");
+-	/* Domain 0 memory region W decrypted video */
++	/* Domain 0+3 memory region W decrypted video */
+ 	/* Domain 2 memory region R decrypted video */
+ 	mmio_write_32((uintptr_t)&(imx_rdc->mem_region[0].mrsa), (DECRYPTED_BUFFER_START - IMX_DDR_BASE) >> 1);
+ 	mmio_write_32((uintptr_t)&(imx_rdc->mem_region[0].mrea), (DECRYPTED_BUFFER_END - IMX_DDR_BASE) >> 1);
+diff --git a/plat/imx/imx8mq/imx8mq_bl31_setup.c b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+index 010de4945..a8d090c90 100644
+--- a/plat/imx/imx8mq/imx8mq_bl31_setup.c
++++ b/plat/imx/imx8mq/imx8mq_bl31_setup.c
+@@ -95,6 +95,12 @@ int get_imx8m_baseboard_id(void);
+ unsigned long tee_base_address;
+ #endif
+ 
++static struct csu_slave_conf csu_csl_conf[] = {
++#ifdef CFG_SECURE_HANTRO_VPU
++	{CSU_CSLn_VPU_SEC, CSU_SURW|CSU_SSRW, 1},
++#endif
++};
++
+ /* set RDC settings */
+ static void bl31_imx_rdc_setup(void)
+ {
+@@ -120,7 +126,7 @@ static void bl31_imx_rdc_setup(void)
+ #endif // DECRYPTED_BUFFER_START
+ 
+ #ifdef DECRYPTED_BUFFER_END
+-	NOTICE("RDC setup memory_region[0] decrypted buffer DID0 W DID2 R/W\n");
++	NOTICE("RDC setup memory_region[0] decrypted buffer DID0 W DID2 R\n");
+ 	/* Domain 0 memory region W decrypted video */
+ 	/* Domain 2 memory region R decrypted video */
+ 	mmio_write_32((uintptr_t)&(imx_rdc->mem_region[0].mrsa), DECRYPTED_BUFFER_START - IMX_DDR_BASE);
+@@ -219,6 +225,11 @@ void bl31_tzc380_setup(void)
+ 	tzc380_dump_state();
+ }
+ 
++void bl31_setup_secure_policy() {
++	csu_set_default_slaves_modes();
++	csu_set_slaves_modes(csu_csl_conf, (uint32_t)ARRAY_SIZE(csu_csl_conf));
++}
++
+ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
+ 			u_register_t arg2, u_register_t arg3)
+ {
+@@ -240,16 +251,6 @@ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
+ 	} else {
+ 		tee_base_address = (unsigned long)0xfe000000;
+ 	}
+-#endif
+-
+-#if !defined (CSU_RDC_TEST)
+-
+-	csu_set_default_slaves_modes();
+-
+-#ifdef CFG_SECURE_HANTRO_VPU
+-	csu_set_slave_index_mode(CSU_CSLn_VPU_SEC,CSU_SSRW | CSU_SURW, 1);
+-#endif
+-
+ #endif
+ 
+ 	/* Dealloc part 0 and 2 with current DID */
+@@ -363,6 +364,7 @@ void bl31_early_platform_setup2(u_register_t arg0, u_register_t arg1,
+ 
+ 	bl31_imx_rdc_setup();
+ 
++	bl31_setup_secure_policy();
+ }
+ 
+ void bl31_plat_arch_setup(void)
+-- 
+2.17.1
+
