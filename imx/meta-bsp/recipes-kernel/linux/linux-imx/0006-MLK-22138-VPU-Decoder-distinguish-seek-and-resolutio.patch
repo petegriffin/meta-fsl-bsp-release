@@ -1,0 +1,87 @@
+From d31d4665b5b5034d1a4a0d67561308dc6f0b430f Mon Sep 17 00:00:00 2001
+From: ming_qian <ming.qian@nxp.com>
+Date: Mon, 1 Jul 2019 10:08:36 +0800
+Subject: [PATCH 06/52] MLK-22138: VPU Decoder: distinguish seek and resolution
+ change to avoid hang on android
+
+In resolution change, driver should avoid abort,
+otherwise stream may hang.
+In seek, driver shouldn't ignore abort,
+otherwise the timestamp may be incorrect and led to hang on android.
+So driver need distinguish seek and resolution change.
+When do seek, output and capture will both be streamoff,
+but resolution change, the output won't be streamoff.
+
+Signed-off-by: ming_qian <ming.qian@nxp.com>
+Reviewed-by: Shijie Qin <shijie.qin@nxp.com>
+---
+ drivers/mxc/vpu_malone/vpu_b0.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/mxc/vpu_malone/vpu_b0.c b/drivers/mxc/vpu_malone/vpu_b0.c
+index 3ad31bfe5322..867818106eb9 100644
+--- a/drivers/mxc/vpu_malone/vpu_b0.c
++++ b/drivers/mxc/vpu_malone/vpu_b0.c
+@@ -1733,6 +1733,22 @@ static int v4l2_ioctl_streamon(struct file *file,
+ 	return ret;
+ }
+ 
++static bool is_need_abort(struct vpu_ctx *ctx, enum v4l2_buf_type type)
++{
++	bool src_status = vb2_is_streaming(&ctx->q_data[V4L2_SRC].vb2_q);
++
++	if (V4L2_TYPE_IS_OUTPUT(type))
++		return false;
++
++	if (ctx->wait_res_change_done) {
++		if (src_status)
++			return false;
++		vpu_dbg(LVL_WARN,
++			"ctx[%d] seek in res change\n", ctx->str_index);
++	}
++	return true;
++}
++
+ static int v4l2_ioctl_streamoff(struct file *file,
+ 		void *fh,
+ 		enum v4l2_buf_type i
+@@ -1758,7 +1774,8 @@ static int v4l2_ioctl_streamoff(struct file *file,
+ 	down(&q_data->drv_q_lock);
+ 	q_data->enable = false;
+ 	up(&q_data->drv_q_lock);
+-	if (i == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
++
++	if (is_need_abort(ctx, i)) {
+ 		mutex_lock(&ctx->dev->fw_flow_mutex);
+ 		send_abort_cmd(ctx);
+ 		mutex_unlock(&ctx->dev->fw_flow_mutex);
+@@ -1772,7 +1789,7 @@ static int v4l2_ioctl_streamoff(struct file *file,
+ 	ret = vpu_dec_queue_disable(q_data, i);
+ 	if (ctx->hang_status) {
+ 		vpu_dbg(LVL_ERR, "%s(): not succeed and some instance are blocked\n", __func__);
+-		return -EINVAL;
++		ret = -EINVAL;
+ 	}
+ 
+ 	return ret;
+@@ -2915,8 +2932,6 @@ static int send_abort_cmd(struct vpu_ctx *ctx)
+ 
+ 	if (!vpu_dec_is_active(ctx))
+ 		return 0;
+-	if (ctx->wait_res_change_done)
+-		return 0;
+ 
+ 	ctx->wait_rst_done = true;
+ 	vpu_dbg(LVL_INFO, "%s(): send VID_API_CMD_ABORT\n", __func__);
+@@ -4059,6 +4074,8 @@ static void vpu_api_event_handler(struct vpu_ctx *ctx, u_int32 uStrIdx, u_int32
+ 		check_queue_is_releasd(This, "EVENT_STR_BUF_RST is received");
+ 		up(&This->drv_q_lock);
+ 		if (check_is_need_reset_after_abort(ctx)) {
++			vpu_dbg(LVL_BIT_FLOW,
++				"Force reset ctx[%d]\n", ctx->str_index);
+ 			v4l2_vpu_send_cmd(ctx, ctx->str_index,
+ 					VID_API_CMD_STOP, 0, NULL);
+ 		} else {
+-- 
+2.17.1
+

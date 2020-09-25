@@ -1,0 +1,26 @@
+From e3d61db76a0711b555bf965a0adf888772829c5c Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 18 Nov 2019 17:18:05 +0100
+Subject: [PATCH 49/52] hantrodec: driver init start level set to late init
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ drivers/mxc/hantro/hantrodec.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/mxc/hantro/hantrodec.c b/drivers/mxc/hantro/hantrodec.c
+index 4c7e5d7247b4..edfeda64c5e7 100755
+--- a/drivers/mxc/hantro/hantrodec.c
++++ b/drivers/mxc/hantro/hantrodec.c
+@@ -2076,7 +2076,7 @@ static void __exit hantro_exit(void)
+ 	platform_driver_unregister(&mxchantro_driver);
+ }
+ 
+-module_init(hantro_init);
++late_initcall(hantro_init);
+ module_exit(hantro_exit);
+ 
+ /* module description */
+-- 
+2.17.1
+

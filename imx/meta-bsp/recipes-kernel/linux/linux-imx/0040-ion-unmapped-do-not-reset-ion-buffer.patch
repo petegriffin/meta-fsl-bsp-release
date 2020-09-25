@@ -1,0 +1,34 @@
+From 887b1fc27b32dd84f934e3fd92a6c731dd2ecdc7 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 30 Oct 2019 17:16:24 +0100
+Subject: [PATCH 40/52] ion unmapped: do not reset ion buffer
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ drivers/staging/android/ion/ion_unmapped_heap.c | 6 ------
+ 1 file changed, 6 deletions(-)
+
+diff --git a/drivers/staging/android/ion/ion_unmapped_heap.c b/drivers/staging/android/ion/ion_unmapped_heap.c
+index 2efc586c01be..87cda2e621bf 100644
+--- a/drivers/staging/android/ion/ion_unmapped_heap.c
++++ b/drivers/staging/android/ion/ion_unmapped_heap.c
+@@ -301,16 +301,10 @@ struct ion_heap *ion_unmapped_heap_create(struct rmem_unmapped *heap_data)
+ 	struct ion_unmapped_heap *unmapped_heap;
+ 	int ret;
+ 
+-	struct page *page;
+ 	size_t size;
+ 
+-	page = pfn_to_page(PFN_DOWN(heap_data->base));
+ 	size = heap_data->size;
+ 
+-	ret = ion_heap_pages_zero(page, size, pgprot_writecombine(PAGE_KERNEL));
+-	if (ret)
+-		return ERR_PTR(ret);
+-
+ 	unmapped_heap = kzalloc(sizeof(*unmapped_heap), GFP_KERNEL);
+ 	if (!unmapped_heap)
+ 		return ERR_PTR(-ENOMEM);
+-- 
+2.17.1
+

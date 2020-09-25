@@ -1,0 +1,33 @@
+From aae48bd7e52ed10691160207805b0ee2daecc8b6 Mon Sep 17 00:00:00 2001
+From: Robby Cai <robby.cai@nxp.com>
+Date: Fri, 14 Jun 2019 13:51:20 +0800
+Subject: [PATCH 20/52] MLK-22112-2 arm64: dts: define resets property for mipi
+ csi
+
+The dispmix-reset device can be used to control MIPI CSI PHY reset.
+Define 'resets' property for it to replace 'dispmix_gpr' usage.
+
+Signed-off-by: Robby Cai <robby.cai@nxp.com>
+Reviewed-by: Fancy Fang <chen.fang@nxp.com>
+(cherry picked from commit 6a1711de8b1c79f87a7b6ffd592988c916a53202)
+---
+ arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi b/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
+index 3caf9c91fdc5..262b0fa27cf7 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
++++ b/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
+@@ -312,7 +312,8 @@
+ 			<&clk IMX8MM_CLK_DISP_APB_ROOT>;
+ 		clock-names = "mipi_clk", "phy_clk", "disp_axi", "disp_apb";
+ 		bus-width = <4>;
+-		csi-gpr = <&dispmix_gpr>;
++		resets = <&dispmix_mipi_rst IMX8MM_MIPI_S_RESET>;
++		reset-names = "csi,mipi_rst";
+ 		power-domains = <&mipi_pd>;
+ 		status = "disabled";
+ 	};
+-- 
+2.17.1
+

@@ -1,0 +1,629 @@
+From 0c923dedec73083d2c415086141901e8a4c85951 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Tue, 7 Apr 2020 13:31:49 +0200
+Subject: [PATCH 39/52] MMIOT-117: Add control of HDMI/HDCP registers using
+ OPTEE
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ drivers/gpu/drm/imx/hdp/Kconfig          |   7 +
+ drivers/gpu/drm/imx/hdp/Makefile         |   2 +
+ drivers/gpu/drm/imx/hdp/imx-hdp-secure.c | 324 +++++++++++++++++++++++
+ drivers/gpu/drm/imx/hdp/imx-hdp-secure.h |  31 +++
+ drivers/gpu/drm/imx/hdp/imx-hdp.c        | 123 ++++++++-
+ 5 files changed, 475 insertions(+), 12 deletions(-)
+ create mode 100644 drivers/gpu/drm/imx/hdp/imx-hdp-secure.c
+ create mode 100644 drivers/gpu/drm/imx/hdp/imx-hdp-secure.h
+
+diff --git a/drivers/gpu/drm/imx/hdp/Kconfig b/drivers/gpu/drm/imx/hdp/Kconfig
+index 098a1a99a70f..f0b080ec829f 100644
+--- a/drivers/gpu/drm/imx/hdp/Kconfig
++++ b/drivers/gpu/drm/imx/hdp/Kconfig
+@@ -17,3 +17,10 @@ config IMX_HDP_CEC
+ 	---help---
+ 	  When selected the imx hdmi will support the optional
+ 	  HDMI CEC feature.
++
++config DRM_SDP_HDCP_TA
++        bool "i.MX8M HDCP/HDMI secure registers"
++        default n
++        depends on DRM_IMX_HDP
++        help
++          Support HDCP OPTEE Trusted Application to secure HDMI/HDCP registers for i.MX8MQ processor.
+diff --git a/drivers/gpu/drm/imx/hdp/Makefile b/drivers/gpu/drm/imx/hdp/Makefile
+index 84c7267642fc..53aee66b37dd 100644
+--- a/drivers/gpu/drm/imx/hdp/Makefile
++++ b/drivers/gpu/drm/imx/hdp/Makefile
+@@ -7,3 +7,5 @@ obj-$(CONFIG_DRM_IMX_HDP) += imx-hdp.o \
+ 			API_AFE_mcu1_dp.o \
+ 			API_AFE_mcu2_dp.o \
+ 			imx-hdp-audio.o
++
++obj-$(CONFIG_DRM_SDP_HDCP_TA) += imx-hdp-secure.o
+diff --git a/drivers/gpu/drm/imx/hdp/imx-hdp-secure.c b/drivers/gpu/drm/imx/hdp/imx-hdp-secure.c
+new file mode 100644
+index 000000000000..e08e01873f4b
+--- /dev/null
++++ b/drivers/gpu/drm/imx/hdp/imx-hdp-secure.c
+@@ -0,0 +1,324 @@
++/*
++ * Copyright 2017-2019 NXP
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/tee_drv.h>
++
++#include <drm/drmP.h>
++
++#include <imx-hdp-secure.h>
++
++/** @brief  PTA UUID generated at https://www.gguid.com/ */
++/* aaf0c79e-5ff4-4f8c-bef4-042337f0d418 */
++#define HDCP_PTA_UUID {0xaaf0c79e,0x5ff4,0x4f8c,{0xbe,0xf4,0x04,0x23,0x37,0xf0,0xd4,0x18}}
++
++#define PTA_HDCP_CMD_WRITE 		0
++#define PTA_HDCP_CMD_READ 		1
++
++typedef struct
++{
++	struct tee_context *ctx;
++	uint32_t session;
++} shdcp_bus;
++
++static shdcp_bus hdcp_bus[PTA_HDCP_MAX_BUSID];
++
++typedef struct {
++	uint32_t timeLow;
++	uint16_t timeMid;
++	uint16_t timeHiAndVersion;
++	uint8_t clockSeqAndNode[8];
++} RTC_UUID;
++
++/*****************************************************************************
++ * Helpers to manage access to the pseudo OPTEE TA protecting HDCP registers *
++ *****************************************************************************/
++
++static int imx_hdcp_optee_match(struct tee_ioctl_version_data *ver, const void *data)
++{
++	if (ver->impl_id == TEE_IMPL_ID_OPTEE)
++		return 1;
++	else
++		return 0;
++}
++
++static void uuid_to_octets(uint8_t d[TEE_IOCTL_UUID_LEN], const RTC_UUID *s)
++{
++	d[0] = s->timeLow >> 24;
++	d[1] = s->timeLow >> 16;
++	d[2] = s->timeLow >> 8;
++	d[3] = s->timeLow;
++	d[4] = s->timeMid >> 8;
++	d[5] = s->timeMid;
++	d[6] = s->timeHiAndVersion >> 8;
++	d[7] = s->timeHiAndVersion;
++	memcpy(d + 8, s->clockSeqAndNode, sizeof(s->clockSeqAndNode));
++}
++
++static uint32_t imx_hdcp_secure_get_session(uint32_t busId)
++{
++	if (busId >= PTA_HDCP_HDP_BUSID && busId < PTA_HDCP_MAX_BUSID)
++	{
++		return hdcp_bus[busId].session;
++	}
++	pr_err("%s busId %d is not supported\n",__func__, busId);
++	return 0;
++}
++
++static void imx_hdcp_secure_set_session(uint32_t busId, uint32_t session)
++{
++	DRM_WARN("imx_hdcp_secure_set_session bus Id %d session 0x%08X \n", busId, session);
++
++	if (busId >= PTA_HDCP_HDP_BUSID && busId < PTA_HDCP_MAX_BUSID)
++	{
++		hdcp_bus[busId].session = session;
++	}
++	else
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++	}
++}
++
++static struct tee_context* imx_hdcp_secure_get_context(uint32_t busId)
++{
++	if (busId >= PTA_HDCP_HDP_BUSID && busId < PTA_HDCP_MAX_BUSID)
++	{
++		return hdcp_bus[busId].ctx;
++	}
++	pr_err("%s busId %d is not supported\n",__func__, busId);
++	return NULL;
++}
++
++static void imx_hdcp_secure_set_context(uint32_t busId, struct tee_context *ctx)
++{
++	if (busId >= PTA_HDCP_HDP_BUSID && busId < PTA_HDCP_MAX_BUSID)
++	{
++		hdcp_bus[busId].ctx = ctx;
++	}
++	else
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++	}
++}
++
++/*****************
++ * API functions *
++ *****************/
++
++void imx_hdcp_secure_register_write(uint32_t busId, uint32_t offset, uint32_t value)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++	struct tee_context *ctx;
++	uint32_t session;
++
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return;
++	}
++
++	ctx = imx_hdcp_secure_get_context(busId);
++	if (ctx == NULL)
++	{
++		pr_err("%s invalid tee context\n",__func__);
++		return;
++	}
++
++	session = imx_hdcp_secure_get_session(busId);
++        if (session == 0)
++	{
++		pr_err("%s invalid tee session\n",__func__);
++		return;
++	}
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HDCP_CMD_WRITE function */
++	inv_arg.func = PTA_HDCP_CMD_WRITE;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = busId;
++	param[1].u.value.a = offset;
++	param[1].u.value.b = value;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret)
++	{
++		pr_err("PTA_HDCP_CMD_WRITE invoke function err: 0x%08X 0x%08X\n", ret, inv_arg.ret);
++	}
++}
++
++uint32_t imx_hdcp_secure_register_read(uint32_t busId, uint32_t offset)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++	struct tee_context *ctx;
++	uint32_t session;
++
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return 0;
++	}
++
++	ctx = imx_hdcp_secure_get_context(busId);
++	if (ctx == NULL)
++	{
++		pr_err("%s invalid tee context\n",__func__);
++		return 0;
++	}
++
++	session = imx_hdcp_secure_get_session(busId);
++	if (session == 0)
++	{
++		pr_err("%s invalid tee session\n",__func__);
++		return 0;
++	}
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HDCP_CMD_READ function */
++	inv_arg.func = PTA_HDCP_CMD_READ;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++	param[0].u.value.a = busId;
++	param[0].u.value.b = offset;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret)
++	{
++		pr_err("PTA_HDCP_CMD_READ invoke function err: 0x%08X 0x%08X\n", ret,inv_arg.ret);
++		return 0;
++	}
++	return param[1].u.value.a;
++}
++
++bool imx_hdcp_secure_open_context(uint32_t busId)
++{
++	struct tee_context *ctx;
++	struct tee_ioctl_version_data vers = {
++		.impl_id = TEE_OPTEE_CAP_TZ,
++		.impl_caps = TEE_IMPL_ID_OPTEE,
++		.gen_caps = TEE_GEN_CAP_GP,
++	};
++
++	DRM_INFO("imx_hdcp_secure_open_context\n");
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return false;
++	}
++	ctx = tee_client_open_context(NULL, imx_hdcp_optee_match, NULL, &vers);
++	if (IS_ERR(ctx))
++	{
++		pr_err("unable to open tee ctx %p\n",(void*)ctx);
++		return false;
++	}
++
++	imx_hdcp_secure_set_context(busId,ctx);
++
++	return true;
++}
++
++void imx_hdcp_secure_close_context(uint32_t busId)
++{
++	struct tee_context *ctx;
++
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return;
++	}
++	ctx = imx_hdcp_secure_get_context(busId);
++	if (ctx)
++	{
++		tee_client_close_context(ctx);
++		imx_hdcp_secure_set_context(busId,NULL);
++	}
++}
++
++bool imx_hdcp_secure_open_session(uint32_t busId)
++{
++	const RTC_UUID pta_uuid = HDCP_PTA_UUID;
++	struct tee_ioctl_open_session_arg sess_arg;
++	struct tee_param param[4];
++	struct tee_param *params = NULL;
++	int result;
++	struct tee_context *ctx;
++
++	DRM_INFO("imx_hdcp_secure_open_session\n");
++
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return false;
++	}
++	ctx = imx_hdcp_secure_get_context(busId);
++	if (ctx == NULL)
++	{
++		pr_err("%s can't get tee_context for busId %d\n",__func__, busId);
++		return false;
++	}
++	memset(&sess_arg, 0, sizeof(sess_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Open session with pseudo HDCP TA */
++	uuid_to_octets(sess_arg.uuid, &pta_uuid);
++	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
++	sess_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = busId;
++	params = param;
++	result = tee_client_open_session(ctx, &sess_arg, params);
++	if ((result < 0) || sess_arg.ret)
++	{
++		return false;
++	}
++	imx_hdcp_secure_set_session(busId, sess_arg.session);
++	return true;
++}
++
++void imx_hdp_secure_close_session(uint32_t busId)
++{
++	struct tee_context *ctx;
++	uint32_t session;
++
++	DRM_INFO("imx_hdp_secure_close_session\n");
++
++	if (busId < PTA_HDCP_HDP_BUSID || busId >= PTA_HDCP_MAX_BUSID)
++	{
++		pr_err("%s busId %d is not supported\n",__func__, busId);
++		return;
++	}
++	ctx = imx_hdcp_secure_get_context(busId);
++	if (ctx)
++	{
++		session = imx_hdcp_secure_get_session(busId);
++		tee_client_close_session(ctx,session);
++		imx_hdcp_secure_set_session(busId,0);
++	}
++}
++
+diff --git a/drivers/gpu/drm/imx/hdp/imx-hdp-secure.h b/drivers/gpu/drm/imx/hdp/imx-hdp-secure.h
+new file mode 100644
+index 000000000000..e03bb9422bae
+--- /dev/null
++++ b/drivers/gpu/drm/imx/hdp/imx-hdp-secure.h
+@@ -0,0 +1,31 @@
++/*
++ * Copyright 2017-2019 NXP
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; either version 2
++ * of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef _IMX_HDCP_SECURE_H_
++
++#define _IMX_HDCP_SECURE_H_
++
++#define PTA_HDCP_HDP_BUSID             0
++#define PTA_HDCP_HDP_SEC_BUSID         1
++#define PTA_HDCP_RESET_BUSID           2
++#define PTA_HDCP_MAX_BUSID             3
++
++void imx_hdcp_secure_register_write(uint32_t BusId, uint32_t offset, uint32_t value);
++uint32_t imx_hdcp_secure_register_read(uint32_t BusId, uint32_t offset);
++bool imx_hdcp_secure_open_context(uint32_t BusId);
++void imx_hdcp_secure_close_context(uint32_t BusId);
++bool imx_hdcp_secure_open_session(uint32_t BusId);
++void imx_hdcp_secure_close_session(uint32_t BusId);
++
++#endif /* !_IMX_HDCP_SECURE_H_ */
+diff --git a/drivers/gpu/drm/imx/hdp/imx-hdp.c b/drivers/gpu/drm/imx/hdp/imx-hdp.c
+index f39a20aabe2e..b73fadab55e3 100644
+--- a/drivers/gpu/drm/imx/hdp/imx-hdp.c
++++ b/drivers/gpu/drm/imx/hdp/imx-hdp.c
+@@ -31,6 +31,10 @@
+ 
+ #define B0_SILICON_ID			0x11
+ 
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++#include <imx-hdp-secure.h>
++#endif
++
+ struct drm_display_mode *g_mode;
+ uint8_t g_default_mode = 3;
+ static struct drm_display_mode edid_cea_modes[] = {
+@@ -370,16 +374,27 @@ void imx8qm_phy_reset(sc_ipc_t ipcHndl, struct hdp_mem *mem, u8 reset)
+ 
+ void imx8mq_phy_reset(sc_ipc_t ipcHndl, struct hdp_mem *mem, u8 reset)
+ {
+-	void *tmp_addr = mem->rst_base;
+ 
++#ifndef CONFIG_DRM_SDP_HDCP_TA
++	void *tmp_addr = mem->rst_base;
++#endif
++	DRM_WARN("imx8mq_phy_reset addr: 0x%x\n", mem->rst_base );
+ 	if (reset)
+-		__raw_writel(0x8,
+-			     (volatile unsigned int *)(tmp_addr+0x4)); /*set*/
++	{
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++		imx_hdcp_secure_register_write(PTA_HDCP_RESET_BUSID, 0x04, 0x8); /*set*/
++#else
++		__raw_writel(0x8, (volatile unsigned int *)(tmp_addr+0x4)); /*set*/
++#endif
++	}
+ 	else
+-		__raw_writel(0x8,
+-			     (volatile unsigned int *)(tmp_addr+0x8)); /*clear*/
+-
+-
++	{
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++		imx_hdcp_secure_register_write(PTA_HDCP_RESET_BUSID, 0x8, 0x8); /*clear*/
++#else
++		__raw_writel(0x8, (volatile unsigned int *)(tmp_addr+0x8)); /*clear*/
++#endif
++	}
+ 	return;
+ }
+ 
+@@ -1136,13 +1151,19 @@ static int imx8mq_hdp_read(struct hdp_mem *mem,
+ 			   unsigned int *value)
+ {
+ 	unsigned int temp;
++#ifndef CONFIG_DRM_SDP_HDCP_TA
+ 	void *tmp_addr;
+-
++#endif
+ 	mutex_lock(&mem->mutex);
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++	temp  = imx_hdcp_secure_register_read(PTA_HDCP_HDP_BUSID, addr);
++#else
+ 	tmp_addr = mem->regs_base + addr;
+ 	temp = __raw_readl((volatile unsigned int *)tmp_addr);
++#endif
+ 	*value = temp;
+ 	mutex_unlock(&mem->mutex);
++
+ 	return 0;
+ }
+ 
+@@ -1150,11 +1171,17 @@ static int imx8mq_hdp_write(struct hdp_mem *mem,
+ 			    unsigned int addr,
+ 			    unsigned int value)
+ {
++#ifndef CONFIG_DRM_SDP_HDCP_TA
+ 	void *tmp_addr;
+-
++#endif
+ 	mutex_lock(&mem->mutex);
++
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++	imx_hdcp_secure_register_write(PTA_HDCP_HDP_BUSID, addr, value);
++#else
+ 	tmp_addr = mem->regs_base + addr;
+ 	__raw_writel(value, (volatile unsigned int *)tmp_addr);
++#endif
+ 	mutex_unlock(&mem->mutex);
+ 	return 0;
+ }
+@@ -1164,11 +1191,16 @@ static int imx8mq_hdp_sread(struct hdp_mem *mem,
+ 			    unsigned int *value)
+ {
+ 	unsigned int temp;
++#ifndef CONFIG_DRM_SDP_HDCP_TA
+ 	void *tmp_addr;
+-
++#endif
+ 	mutex_lock(&mem->mutex);
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++	temp  = imx_hdcp_secure_register_read(PTA_HDCP_HDP_SEC_BUSID, addr);
++#else
+ 	tmp_addr = mem->ss_base + addr;
+ 	temp = __raw_readl((volatile unsigned int *)tmp_addr);
++#endif
+ 	*value = temp;
+ 	mutex_unlock(&mem->mutex);
+ 	return 0;
+@@ -1178,11 +1210,16 @@ static int imx8mq_hdp_swrite(struct hdp_mem *mem,
+ 			     unsigned int addr,
+ 			     unsigned int value)
+ {
++#ifndef CONFIG_DRM_SDP_HDCP_TA
+ 	void *tmp_addr;
+-
++#endif
+ 	mutex_lock(&mem->mutex);
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++	imx_hdcp_secure_register_write(PTA_HDCP_HDP_SEC_BUSID, addr, value);
++#else
+ 	tmp_addr = mem->ss_base + addr;
+ 	__raw_writel(value, (volatile unsigned int *)tmp_addr);
++#endif
+ 	mutex_unlock(&mem->mutex);
+ 	return 0;
+ }
+@@ -1434,7 +1471,9 @@ static int imx_hdp_imx_bind(struct device *dev, struct device *master,
+ 	struct drm_encoder *encoder;
+ 	struct drm_bridge *bridge;
+ 	struct drm_connector *connector;
++#ifndef CONFIG_DRM_SDP_HDCP_TA
+ 	struct resource *res;
++#endif
+ 	u8 hpd;
+ 	int ret;
+ 
+@@ -1461,8 +1500,64 @@ static int imx_hdp_imx_bind(struct device *dev, struct device *master,
+ 	if (hdp->irq[HPD_IRQ_OUT] < 0)
+ 		dev_info(&pdev->dev, "No plug_out irq number\n");
+ 
+-
+ 	mutex_init(&hdp->mem.mutex);
++
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++	/* Open sessions to access HDCP registers*/
++	if ( imx_hdcp_secure_open_context(PTA_HDCP_HDP_BUSID) )
++	{
++		if ( imx_hdcp_secure_open_session(PTA_HDCP_HDP_BUSID) )
++		{
++			DRM_INFO("PTA_HDCP_HDP_BUSID registered\n");
++		}
++		else
++		{
++			dev_err(dev, "Failed to get HDP CTRL base register\n");
++			return -EINVAL;
++		}
++	}
++	else
++	{
++		dev_err(dev, "Failed to get HDP CTRL base register\n");
++		return -EINVAL;
++	}
++
++	if ( imx_hdcp_secure_open_context(PTA_HDCP_HDP_SEC_BUSID) )
++	{
++		if ( imx_hdcp_secure_open_session(PTA_HDCP_HDP_SEC_BUSID) )
++		{
++			DRM_INFO("PTA_HDCP_HDP_SEC_BUSID registered\n");
++		}
++		else
++		{
++			dev_err(dev, "Failed to get HDP CRS base register\n");
++			return -EINVAL;
++		}
++	}
++	else
++	{
++		dev_err(dev, "Failed to get HDP CRS base register\n");
++		return -EINVAL;
++	}
++
++	if ( imx_hdcp_secure_open_context(PTA_HDCP_RESET_BUSID) )
++	{
++		if ( imx_hdcp_secure_open_session(PTA_HDCP_RESET_BUSID) )
++		{
++			DRM_INFO("PTA_HDCP_RESET_BUSID registered\n");
++		}
++		else
++		{
++			dev_err(dev, "Failed to get HDP RESET base register\n");
++			return -EINVAL;
++		}
++	}
++	else
++	{
++		dev_err(dev, "Failed to get HDP RESET base register\n");
++		return -EINVAL;
++	}
++#else
+ 	/* register map */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	hdp->mem.regs_base = devm_ioremap_resource(dev, res);
+@@ -1482,6 +1577,7 @@ static int imx_hdp_imx_bind(struct device *dev, struct device *master,
+ 	hdp->mem.rst_base = devm_ioremap_resource(dev, res);
+ 	if (IS_ERR(hdp->mem.rst_base))
+ 		dev_warn(dev, "Failed to get HDP RESET base register\n");
++#endif
+ 
+ 	hdp->is_cec = of_property_read_bool(pdev->dev.of_node, "fsl,cec");
+ 
+@@ -1731,3 +1827,6 @@ MODULE_AUTHOR("Sandor Yu <Sandor.yu@nxp.com>");
+ MODULE_DESCRIPTION("IMX8QM DP Display Driver");
+ MODULE_LICENSE("GPL");
+ MODULE_ALIAS("platform:dp-hdmi-imx");
++#ifdef CONFIG_DRM_SDP_HDCP_TA
++MODULE_SOFTDEP("pre: optee-clnt");
++#endif
+-- 
+2.17.1
+

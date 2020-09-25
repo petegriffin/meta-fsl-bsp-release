@@ -1,0 +1,54 @@
+From 6531dc54697a9ec8f2ae152c553a173ef63f4151 Mon Sep 17 00:00:00 2001
+From: Jacky Bai <ping.bai@nxp.com>
+Date: Mon, 24 Jun 2019 17:09:02 +0800
+Subject: [PATCH 23/52] MLK-22086 clk: imx: Keep the root clock gate always
+ enabled for m4
+
+If the M4/M7 core is enabled, just skip registering the gate ops
+to make sure the ROOT clock is always enabled for M core to simplify
+the clock management due to the lack of domain control for the root
+clock slice gate.
+
+Signed-off-by: Jacky Bai <ping.bai@nxp.com>
+Reviewed-by: Abel Vesa <abel.vesa@nxp.com>
+(cherry picked from commit 0853b1d6113e99650c612bd1d68ec94cba88b148)
+---
+ drivers/clk/imx/clk-composite-8m.c | 21 ++++++++++++---------
+ 1 file changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/clk/imx/clk-composite-8m.c b/drivers/clk/imx/clk-composite-8m.c
+index 076e5e28fe24..341c192582f8 100644
+--- a/drivers/clk/imx/clk-composite-8m.c
++++ b/drivers/clk/imx/clk-composite-8m.c
+@@ -158,16 +158,19 @@ struct clk *imx8m_clk_composite_flags(const char *name,
+ 	div->lock = &imx_ccm_lock;
+ 	div->flags = CLK_DIVIDER_ROUND_CLOSEST;
+ 
+-	gate = kzalloc(sizeof(*gate), GFP_KERNEL);
+-	if (!gate)
+-		goto fail;
+-
+-	gate_hw = &gate->hw;
+-	gate->reg = reg;
+-	gate->bit_idx = PCG_CGC_SHIFT;
+ 
+-	if (imx_src_is_m4_enabled())
+-		flags |= CLK_IGNORE_UNUSED;
++	/* skip registering the gate ops if M4 is enabled */
++	if (imx_src_is_m4_enabled()) {
++		gate_hw = NULL;
++	} else {
++		gate = kzalloc(sizeof(*gate), GFP_KERNEL);
++		if (!gate)
++			goto fail;
++
++		gate_hw = &gate->hw;
++		gate->reg = reg;
++		gate->bit_idx = PCG_CGC_SHIFT;
++	}
+ 
+ 	clk = clk_register_composite(NULL, name, parent_names, num_parents,
+ 					mux_hw, &clk_mux_ops, div_hw,
+-- 
+2.17.1
+

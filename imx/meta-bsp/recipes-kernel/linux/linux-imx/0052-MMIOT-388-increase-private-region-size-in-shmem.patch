@@ -1,0 +1,26 @@
+From d6edd69276afc5f9969d7f6c36ae8738d65bd353 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Fri, 4 Sep 2020 17:58:24 +0200
+Subject: [PATCH 52/52] MMIOT-388: increase private region size in shmem
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ drivers/tee/optee/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/tee/optee/core.c b/drivers/tee/optee/core.c
+index 68435f42db41..69bb4cd3390c 100644
+--- a/drivers/tee/optee/core.c
++++ b/drivers/tee/optee/core.c
+@@ -35,7 +35,7 @@
+ 
+ #define DRIVER_NAME "optee"
+ 
+-#define OPTEE_SHM_NUM_PRIV_PAGES	1
++#define OPTEE_SHM_NUM_PRIV_PAGES	64
+ 
+ /**
+  * optee_from_msg_param() - convert from OPTEE_MSG parameters to
+-- 
+2.17.1
+

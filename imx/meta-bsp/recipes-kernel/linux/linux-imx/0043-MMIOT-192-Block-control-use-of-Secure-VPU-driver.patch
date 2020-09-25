@@ -1,0 +1,358 @@
+From 4de8dbb9afa0b4c4a94bd17fa3494ea66d64db1f Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 11 Sep 2019 15:08:40 +0200
+Subject: [PATCH 43/52] MMIOT-192: Block control use of Secure VPU driver
+
+---
+ drivers/mxc/hantro_845/hantrodec_845s.c | 261 +++++++++++++++---------
+ 1 file changed, 163 insertions(+), 98 deletions(-)
+
+diff --git a/drivers/mxc/hantro_845/hantrodec_845s.c b/drivers/mxc/hantro_845/hantrodec_845s.c
+index ac5bfb5306df..0e63b3bcb7db 100755
+--- a/drivers/mxc/hantro_845/hantrodec_845s.c
++++ b/drivers/mxc/hantro_845/hantrodec_845s.c
+@@ -254,6 +254,19 @@ static DECLARE_WAIT_QUEUE_HEAD(hw_queue);
+ #define DWL_CLIENT_TYPE_VP9_DEC          11U
+ #define DWL_CLIENT_TYPE_HEVC_DEC         12U
+ 
++static void uuid_to_octets(uint8_t d[TEE_IOCTL_UUID_LEN], const RTC_UUID *s)
++{
++	d[0] = s->timeLow >> 24;
++	d[1] = s->timeLow >> 16;
++	d[2] = s->timeLow >> 8;
++	d[3] = s->timeLow;
++	d[4] = s->timeMid >> 8;
++	d[5] = s->timeMid;
++	d[6] = s->timeHiAndVersion >> 8;
++	d[7] = s->timeHiAndVersion;
++	memcpy(d + 8, s->clockSeqAndNode, sizeof(s->clockSeqAndNode));
++}
++
+ static int hantro_device_id(struct device *dev)
+ {
+ 	int id;
+@@ -285,43 +298,152 @@ static int hantro_clk_disable(hantrodec_clk *clk)
+ 	return 0;
+ }
+ 
++static void hantro_secure_regs_write(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset, uint32_t value)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = offset;
++	param[0].u.value.b = value;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_WRITE invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++		return;
++	}
++}
++
++static uint32_t hantro_secure_regs_read(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_READ function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_READ;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++	param[0].u.value.a = offset;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_READ invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++		return 0;
++	}
++	return param[1].u.value.a;
++}
++
+ static int hantro_ctrlblk_reset(hantrodec_t *dev)
+ {
+ 	volatile u8 *iobase;
+ 	u32 val;
++	const RTC_UUID pta_uuid = PTA_HANTRO_VPU_PTA_UUID;
++	struct tee_ioctl_open_session_arg sess_arg;
++	uint32_t session = 0;
++	int result;
++
++	memset(&sess_arg, 0, sizeof(sess_arg));
++
++	/* Open session with pseudo TA */
++	uuid_to_octets(sess_arg.uuid, &pta_uuid);
++	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
++	sess_arg.num_params = 0;
++
++	result = tee_client_open_session(dev->ctx, &sess_arg, NULL);
++	if ((result < 0) || sess_arg.ret) {
++		pr_err("unable to open pta session 0x%08X\n",sess_arg.ret);
++	} else {
++		session = sess_arg.session;
++	}
+ 
+ 	//config G1/G2
+ 	hantro_clk_enable(&dev->clk);
+-	iobase = (volatile u8 *)ioremap_nocache(BLK_CTL_BASE, 0x10000);
+-	if (dev->core_id == 0) {
+-		val = ioread32(iobase);
+-		val &= (~0x2);
+-		iowrite32(val, iobase);  //assert G1 block soft reset  control
+-		udelay(2);
+-		val = ioread32(iobase);
+-		val |= 0x2;
+-		iowrite32(val, iobase);  //desert G1 block soft reset  control
+-
+-		val = ioread32(iobase+4);
+-		val |= 0x2;
+-		iowrite32(val, iobase+4); //VPUMIX G1 block clock enable control
+-		iowrite32(0xFFFFFFFF, iobase + 0x8); // all G1 fuse dec enable
+-		iowrite32(0xFFFFFFFF, iobase + 0xC); // all G1 fuse pp enable
++
++	if (session)
++	{
++		if (dev->core_id == 0) {
++			val = hantro_secure_regs_read(dev->ctx,session,0);
++			val &= (~0x2);
++			hantro_secure_regs_write(dev->ctx,session, 0, val);  //assert G1 block soft reset  control
++			udelay(2);
++			val = hantro_secure_regs_read(dev->ctx,session,0);
++			val |= 0x2;
++			hantro_secure_regs_write(dev->ctx,session, 0, val);  //desert G1 block soft reset  control
++
++			val = hantro_secure_regs_read(dev->ctx,session,4);
++			val |= 0x2;
++			hantro_secure_regs_write(dev->ctx,session, 4, val);  //VPUMIX G1 block clock enable control
++			hantro_secure_regs_write(dev->ctx,session, 0x8, 0xFFFFFFFF); // all G1 fuse dec enable
++			hantro_secure_regs_write(dev->ctx,session, 0xC, 0xFFFFFFFF);  // all G1 fuse pp enable
++		} else {
++			val = hantro_secure_regs_read(dev->ctx,session,0);
++			val &= (~0x1);
++			hantro_secure_regs_write(dev->ctx,session, 0, val);  //assert G2 block soft reset  control
++			udelay(2);
++			val = hantro_secure_regs_read(dev->ctx,session,0);
++			val |= 0x1;
++			hantro_secure_regs_write(dev->ctx,session, 0, val);  //desert G2 block soft reset  control
++
++			val = hantro_secure_regs_read(dev->ctx,session,4);
++			val |= 0x1;
++			hantro_secure_regs_write(dev->ctx,session, 4, val);  //VPUMIX G2 block clock enable control
++			hantro_secure_regs_write(dev->ctx,session, 0x10, 0xFFFFFFFF); // all G2 fuse dec enable
++		}
++		tee_client_close_session(dev->ctx,session);
+ 	} else {
+-		val = ioread32(iobase);
+-		val &= (~0x1);
+-		iowrite32(val, iobase);  //assert G2 block soft reset  control
+-		udelay(2);
+-		val = ioread32(iobase);
+-		val |= 0x1;
+-		iowrite32(val, iobase);  //desert G2 block soft reset  control
+-
+-		val = ioread32(iobase+4);
+-		val |= 0x1;
+-		iowrite32(val, iobase+4); //VPUMIX G2 block clock enable control
+-		iowrite32(0xFFFFFFFF, iobase + 0x10); // all G2 fuse dec enable
+-	}
+-	iounmap(iobase);
++		iobase = (volatile u8 *)ioremap_nocache(BLK_CTL_BASE, 0x10000);
++		if (dev->core_id == 0) {
++			val = ioread32(iobase);
++			val &= (~0x2);
++			iowrite32(val, iobase);  //assert G1 block soft reset  control
++			udelay(2);
++			val = ioread32(iobase);
++			val |= 0x2;
++			iowrite32(val, iobase);  //desert G1 block soft reset  control
++
++			val = ioread32(iobase+4);
++			val |= 0x2;
++			iowrite32(val, iobase+4); //VPUMIX G1 block clock enable control
++			iowrite32(0xFFFFFFFF, iobase + 0x8); // all G1 fuse dec enable
++			iowrite32(0xFFFFFFFF, iobase + 0xC); // all G1 fuse pp enable
++		} else {
++			val = ioread32(iobase);
++			val &= (~0x1);
++			iowrite32(val, iobase);  //assert G2 block soft reset  control
++			udelay(2);
++			val = ioread32(iobase);
++			val |= 0x1;
++			iowrite32(val, iobase);  //desert G2 block soft reset  control
++
++			val = ioread32(iobase+4);
++			val |= 0x1;
++			iowrite32(val, iobase+4); //VPUMIX G2 block clock enable control
++			iowrite32(0xFFFFFFFF, iobase + 0x10); // all G2 fuse dec enable
++		}
++		iounmap(iobase);
++	}
+ 	hantro_clk_disable(&dev->clk);
+ 	return 0;
+ }
+@@ -416,29 +538,7 @@ static void hantro_hwregs_write(hantrodec_t *dev,
+ {
+ 	if (dev->session)
+ 	{
+-		int ret = 0;
+-		struct tee_ioctl_invoke_arg inv_arg;
+-		struct tee_param param[4];
+-
+-		memset(&inv_arg, 0, sizeof(inv_arg));
+-		memset(&param, 0, sizeof(param));
+-
+-		/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+-		inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE;
+-		inv_arg.session = dev->session;
+-		inv_arg.num_params = 4;
+-
+-		/* Fill invoke cmd params */
+-		param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-		param[0].u.value.a = offset;
+-		param[0].u.value.b = value;
+-
+-		ret = tee_client_invoke_func(dev->ctx, &inv_arg, param);
+-		if ((ret < 0) || inv_arg.ret) {
+-			pr_err("PTA_HANTRO_VPU_CMD_WRITE invoke function err: 0x%08X 0x%08X\n",
+-			       ret,inv_arg.ret);
+-			return;
+-		}
++		hantro_secure_regs_write(dev->ctx,dev->session,offset,value);
+ 	} else {
+ 		iowrite32(value, dev->hwregs + offset);
+ 	}
+@@ -449,30 +549,7 @@ static uint32_t hantro_hwregs_read(hantrodec_t *dev,
+ {
+ 	if (dev->session)
+ 	{
+-		int ret = 0;
+-		struct tee_ioctl_invoke_arg inv_arg;
+-		struct tee_param param[4];
+-
+-		memset(&inv_arg, 0, sizeof(inv_arg));
+-		memset(&param, 0, sizeof(param));
+-
+-		/* Invoke PTA_HANTRO_VPU_CMD_READ function */
+-		inv_arg.func = PTA_HANTRO_VPU_CMD_READ;
+-		inv_arg.session = dev->session;
+-		inv_arg.num_params = 4;
+-
+-		/* Fill invoke cmd params */
+-		param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-		param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
+-		param[0].u.value.a = offset;
+-
+-		ret = tee_client_invoke_func(dev->ctx, &inv_arg, param);
+-		if ((ret < 0) || inv_arg.ret) {
+-			pr_err("PTA_HANTRO_VPU_CMD_READ invoke function err: 0x%08X 0x%08X\n",
+-			       ret,inv_arg.ret);
+-			return 0;
+-		}
+-		return param[1].u.value.a;
++		return hantro_secure_regs_read(dev->ctx,dev->session,offset);
+ 	} else {
+ 		return ioread32(dev->hwregs + offset);
+ 	}
+@@ -1681,19 +1758,6 @@ static const struct file_operations hantrodec_fops = {
+  *Return type     : int
+  *---------------------------------------------------------------------------
+  */
+-static void uuid_to_octets(uint8_t d[TEE_IOCTL_UUID_LEN], const RTC_UUID *s)
+-{
+-	d[0] = s->timeLow >> 24;
+-	d[1] = s->timeLow >> 16;
+-	d[2] = s->timeLow >> 8;
+-	d[3] = s->timeLow;
+-	d[4] = s->timeMid >> 8;
+-	d[5] = s->timeMid;
+-	d[6] = s->timeHiAndVersion >> 8;
+-	d[7] = s->timeHiAndVersion;
+-	memcpy(d + 8, s->clockSeqAndNode, sizeof(s->clockSeqAndNode));
+-}
+-
+ static int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
+ 				const void *data)
+ {
+@@ -1706,7 +1770,6 @@ static int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
+ static int hantrodec_init(struct platform_device *pdev, int id)
+ {
+ 	int result;
+-	int irq;
+ 	struct device *temp_class;
+ 	hantrodec_t *dev = &hantrodec_data[id];
+ 
+@@ -1769,6 +1832,7 @@ static int hantrodec_init(struct platform_device *pdev, int id)
+ 	ResetAsic(dev);
+ 
+ #if 0
++	int irq;
+ 	/* register irq for each core*/
+ 	irq = platform_get_irq_byname(pdev, "irq_hantro");
+ 	if (irq > 0) {
+@@ -1810,10 +1874,10 @@ static int hantrodec_init(struct platform_device *pdev, int id)
+ 	result = tee_client_open_session(dev->ctx, &sess_arg, param);
+ 	if ((result < 0) || sess_arg.ret) {
+ 		pr_err("unable to open pta session 0x%08X\n",sess_arg.ret);
+-		result = -EINVAL;					// FIXME: errno
+-		goto err_out_class;
++		dev->session = 0;
++	} else {
++		dev->session = sess_arg.session;
+ 	}
+-	dev->session = sess_arg.session;
+ 
+ 	pr_info("hantrodec %d : module inserted. Major = %d\n", id, hantrodec_major);
+ 
+@@ -2104,13 +2168,9 @@ static int hantro_dev_probe(struct platform_device *pdev)
+ 	pr_debug("hantro: dec, bus clock: 0x%lX, 0x%lX\n", clk_get_rate(hantrodec_data[id].clk.dec),
+ 				clk_get_rate(hantrodec_data[id].clk.bus));
+ 
+-	hantro_clk_enable(&hantrodec_data[id].clk);
+-	pm_runtime_enable(&pdev->dev);
+-	pm_runtime_get_sync(&pdev->dev);
+-	hantro_ctrlblk_reset(&hantrodec_data[id]);
+-
+ 	hantrodec_data[id].ctx = tee_client_open_context(NULL, hantrodec_optee_match,
+ 					     NULL, &vers);
++
+ 	if (IS_ERR(hantrodec_data[id].ctx))
+ 	{
+ 		pr_err("unable to open tee ctx 0x%08X\n",(void*)hantrodec_data[id].ctx);
+@@ -2119,6 +2179,11 @@ static int hantro_dev_probe(struct platform_device *pdev)
+ 		goto error;
+ 	}
+ 
++	hantro_clk_enable(&hantrodec_data[id].clk);
++	pm_runtime_enable(&pdev->dev);
++	pm_runtime_get_sync(&pdev->dev);
++	hantro_ctrlblk_reset(&hantrodec_data[id]);
++
+ 	err = hantrodec_init(pdev, id);
+ 	if (err != 0) {
+ 		pr_err("hantro: hantrodec_init failed\n");
+-- 
+2.17.1
+

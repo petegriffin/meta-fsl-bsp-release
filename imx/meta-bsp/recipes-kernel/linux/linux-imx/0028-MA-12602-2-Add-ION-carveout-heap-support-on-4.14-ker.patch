@@ -1,0 +1,56 @@
+From 8f32588b64c64dbde47aa22a53abe00ec70a0e18 Mon Sep 17 00:00:00 2001
+From: "ivan.liu" <xiaowen.liu@nxp.com>
+Date: Fri, 29 Mar 2019 11:00:43 -0400
+Subject: [PATCH 28/52] MA-12602-2 Add ION carveout heap support on 4.14
+ kernel.
+
+Add imx-ion-pool reserved memory to imx8mq/qxp.
+
+Change-Id: Id20b6a6c7d1d425ccc6f121ca89a726ba8a5b068
+Signed-off-by: ivan.liu <xiaowen.liu@nxp.com>
+---
+ arch/arm64/boot/dts/freescale/fsl-imx8mq-evk.dts  |  8 ++++++++
+ arch/arm64/boot/dts/freescale/fsl-imx8qxp-mek.dts | 14 ++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-imx8mq-evk.dts b/arch/arm64/boot/dts/freescale/fsl-imx8mq-evk.dts
+index ce936ae9b2f3..d2d548a910da 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-imx8mq-evk.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-imx8mq-evk.dts
+@@ -1023,3 +1023,11 @@
+ 		};
+ 	};
+ };
++
++&resmem {
++	carveout_region: imx_ion@0 {
++		compatible = "imx-ion-pool";
++		reg = <0x0 0xf8000000 0 0x8000000>;
++	};
++};
++
+diff --git a/arch/arm64/boot/dts/freescale/fsl-imx8qxp-mek.dts b/arch/arm64/boot/dts/freescale/fsl-imx8qxp-mek.dts
+index 3e717323efc3..c50d51699e00 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-imx8qxp-mek.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-imx8qxp-mek.dts
+@@ -15,3 +15,17 @@
+ /dts-v1/;
+ 
+ #include "fsl-imx8qxp-mek.dtsi"
++
++/ {
++    reserved-memory {
++	    #address-cells = <2>;
++	    #size-cells = <2>;
++	    ranges;
++
++	    carveout_region: imx_ion@0 {
++		    compatible = "imx-ion-pool";
++		    reg = <0x0 0xf8000000 0 0x8000000>;
++	    };
++    };
++};
++
+-- 
+2.17.1
+

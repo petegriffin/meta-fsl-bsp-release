@@ -1,0 +1,453 @@
+From dcd14c3c27fdd0deb958cd61eff757a43d652185 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Mon, 4 Nov 2019 09:03:21 +0100
+Subject: [PATCH 47/52] MMIOT-193 : Add PTA_HANTRO_VPU_CMD_READ_MULTIPLE
+ command
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ drivers/mxc/hantro/hantrodec.c               | 73 ++++++++++++--------
+ drivers/mxc/hantro_845/hantrodec_845s.c      | 41 +++++++----
+ drivers/mxc/hantro_secure/Kconfig            |  2 +-
+ drivers/mxc/hantro_secure/hantrodec_secure.c | 51 ++++++++++++++
+ drivers/mxc/hantro_secure/hantrodec_secure.h | 33 +++------
+ 5 files changed, 135 insertions(+), 65 deletions(-)
+
+diff --git a/drivers/mxc/hantro/hantrodec.c b/drivers/mxc/hantro/hantrodec.c
+index 8d26f002305b..4c7e5d7247b4 100755
+--- a/drivers/mxc/hantro/hantrodec.c
++++ b/drivers/mxc/hantro/hantrodec.c
+@@ -171,7 +171,9 @@ static int hantrodec_major; /* dynamic allocation */
+ typedef struct {
+ 	char *buffer;
+ 	unsigned int iosize[HXDEC_MAX_CORES];
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 	volatile u8 *hwregs[HXDEC_MAX_CORES];
++#endif
+ 	int irq[HXDEC_MAX_CORES];
+ 	int hw_id[HXDEC_MAX_CORES];
+ 	int cores;
+@@ -801,11 +803,19 @@ long DecRefreshRegs(hantrodec_t *dev, struct core_desc *Core)
+ 
+ 		/* read all registers from hardware */
+ 		/* both original and extended regs need to be read */
++#ifdef CONFIG_MXC_HANTRO_SECURE
++		hantro_secure_hwregs_read_multiple(id,0,dec_regs[id],HANTRO_DEC_ORG_LAST_REG*4);
++#else
+ 		for (i = 0; i <= HANTRO_DEC_ORG_LAST_REG; i++)
+ 			dec_regs[id][i] = hantro_hwregs_read(dev,id, i*4);
++#endif
+ #ifdef USE_64BIT_ENV
++#ifdef CONFIG_MXC_HANTRO_SECURE
++		hantro_secure_hwregs_read_multiple(id,HANTRO_DEC_EXT_FIRST_REG*4,dec_regs[id],HANTRO_DEC_EXT_LAST_REG*4);
++#else
+ 		for (i = HANTRO_DEC_EXT_FIRST_REG; i <= HANTRO_DEC_EXT_LAST_REG; i++)
+ 			dec_regs[id][i] = hantro_hwregs_read(dev,id, i*4);
++#endif
+ #endif
+ 
+ 		if (timeout) {
+@@ -834,9 +844,12 @@ long DecRefreshRegs(hantrodec_t *dev, struct core_desc *Core)
+ 			return -EFAULT;
+ 
+ 		/* read all registers from hardware */
++#ifdef CONFIG_MXC_HANTRO_SECURE
++		hantro_secure_hwregs_read_multiple(id,0,dec_regs[id],HANTRO_G2_DEC_LAST_REG*4);
++#else
+ 		for (i = 0; i <= HANTRO_G2_DEC_LAST_REG; i++)
+ 			dec_regs[id][i] = hantro_hwregs_read(dev,id, i*4);
+-
++#endif
+ 		if (timeout) {
+ 			/* Enable TIMEOUT bits in Reg[1] */
+ 			dec_regs[id][1] = 0x40100;
+@@ -961,11 +974,20 @@ long PPRefreshRegs(hantrodec_t *dev, struct core_desc *Core)
+ 
+ 	/* read all registers from hardware */
+ 	/* both original and extended regs need to be read */
++#ifdef CONFIG_MXC_HANTRO_SECURE
++	hantro_secure_hwregs_read_multiple(id,HANTRO_PP_ORG_FIRST_REG*4,dec_regs[id],HANTRO_PP_ORG_LAST_REG*4);
++#else
+ 	for (i = HANTRO_PP_ORG_FIRST_REG; i <= HANTRO_PP_ORG_LAST_REG; i++)
+ 		dec_regs[id][i] = hantro_hwregs_read(dev,id, i*4);
++#endif
++
+ #ifdef USE_64BIT_ENV
++#ifdef CONFIG_MXC_HANTRO_SECURE
++	hantro_secure_hwregs_read_multiple(id,HANTRO_PP_EXT_FIRST_REG*4,dec_regs[id],HANTRO_PP_EXT_LAST_REG*4);
++#else
+ 	for (i = HANTRO_PP_EXT_FIRST_REG; i <= HANTRO_PP_EXT_LAST_REG; i++)
+ 		dec_regs[id][i] = hantro_hwregs_read(dev,id, i*4);
++#endif
+ #endif
+ 	/* put registers to user space*/
+ 	/* put original registers to user space*/
+@@ -1548,19 +1570,6 @@ int hantrodec_init(struct platform_device *pdev)
+ 	sema_init(&dec_core_sem, hantrodec_data.cores-1);
+ 	sema_init(&pp_core_sem, 1);
+ 
+-#ifdef CONFIG_MXC_HANTRO_SECURE
+-	int n;
+-
+-	for (n=0; n<hantrodec_data.cores; n++)
+-	{
+-		if (hantro_secure_open_context(n))
+-		{
+-			hantro_secure_alloc_shm(n,DEC_IO_SIZE_MAX/4);
+-			hantro_secure_open_session(n);
+-		}
+-	}
+-#endif
+-
+ 	/* read configuration fo all cores */
+ 	ReadCoreConfig(&hantrodec_data);
+ 
+@@ -1650,13 +1659,6 @@ void hantrodec_cleanup(void)
+ 
+ 	ReleaseIO();
+ 
+-#ifdef CONFIG_MXC_HANTRO_SECURE
+-	for (n = 0; n < dev->cores; n++) {
+-		hantro_secure_close_session(n);
+-		hantro_secure_release_shm(n);
+-	}
+-#endif
+-
+ 	unregister_chrdev(hantrodec_major, "hantrodec");
+ 
+ 	PDEBUG("hantrodec: module removed\n");
+@@ -1676,14 +1678,16 @@ static int CheckHwId(hantrodec_t *dev)
+ 	int found = 0;
+ 
+ 	for (i = 0; i < dev->cores; i++) {
+-		if (dev->hwregs[i] != NULL) {
+-			hwid = readl(dev->hwregs[i]);
+-
++#ifndef CONFIG_MXC_HANTRO_SECURE
++		if (dev->hwregs[i] != NULL)
++#endif
++		{
++			hwid = hantro_hwregs_read(dev,i,0);
+ 			hwid = (hwid >> 16) & 0xFFFF; /* product version only */
+ 
+ 			while (num_hw--) {
+ 				if (hwid == DecHwId[num_hw]) {
+-					pr_debug("hantrodec: Supported HW found at 0x%16lx\n",
++					pr_debug("hantrodec: Supported HW found at 0x%016lx\n",
+ 							multicorebase[i]);
+ 					found++;
+ 					dev->hw_id[i] = hwid;
+@@ -1691,7 +1695,7 @@ static int CheckHwId(hantrodec_t *dev)
+ 				}
+ 			}
+ 			if (!found) {
+-				pr_err("hantrodec: Unknown HW found at 0x%16lx\n",	multicorebase[i]);
++				pr_err("hantrodec: Unknown HW found at 0x%016lx\n",	multicorebase[i]);
+ 				return 0;
+ 			}
+ 			found = 0;
+@@ -1715,7 +1719,7 @@ static int ReserveIO(void)
+ 
+ 	for (i = 0; i < HXDEC_MAX_CORES; i++) {
+ 		if (multicorebase[i] != -1) {
+-
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 			if (!request_mem_region(multicorebase[i], hantrodec_data.iosize[i], "hantrodec0")) {
+ 				pr_err("hantrodec: failed to reserve HW regs\n");
+ 				return -EBUSY;
+@@ -1729,6 +1733,16 @@ static int ReserveIO(void)
+ 				ReleaseIO();
+ 				return -EBUSY;
+ 			}
++#else
++			if (hantro_secure_open_context(i))
++			{
++				hantro_secure_alloc_shm(i,DEC_IO_SIZE_MAX);
++				hantro_secure_open_session(i);
++			} else {
++				ReleaseIO();
++				return -EBUSY;
++			}
++#endif
+ 			hantrodec_data.cores++;
+ 		}
+ 	}
+@@ -1754,9 +1768,14 @@ static void ReleaseIO(void)
+ 	int i;
+ 
+ 	for (i = 0; i < hantrodec_data.cores; i++) {
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 		if (hantrodec_data.hwregs[i])
+ 			iounmap((void *) hantrodec_data.hwregs[i]);
+ 		release_mem_region(multicorebase[i], hantrodec_data.iosize[i]);
++#else
++		hantro_secure_close_session(i);
++		hantro_secure_release_shm(i);
++#endif
+ 	}
+ }
+ 
+diff --git a/drivers/mxc/hantro_845/hantrodec_845s.c b/drivers/mxc/hantro_845/hantrodec_845s.c
+index c767b34e9c0e..ffdd1fea59e6 100755
+--- a/drivers/mxc/hantro_845/hantrodec_845s.c
++++ b/drivers/mxc/hantro_845/hantrodec_845s.c
+@@ -170,7 +170,9 @@ static int cores = 2;
+ typedef struct {
+ 	//char *buffer;
+ 	unsigned int iosize;
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 	volatile u8 *hwregs;
++#endif
+ 	int irq;
+ 	int hw_id;
+ 	int core_id;
+@@ -1689,11 +1691,6 @@ static int hantrodec_init(struct platform_device *pdev, int id)
+ 	sema_init(&dev->dec_core_sem, 1);
+ 	sema_init(&dev->pp_core_sem, 1);
+ 
+-#ifdef CONFIG_MXC_HANTRO_SECURE
+-	hantro_secure_alloc_shm(id,DEC_IO_SIZE_MAX/4);
+-	hantro_secure_open_session(id);
+-#endif
+-
+ 	/* read configuration fo all cores */
+ 	ReadCoreConfig(dev);
+ 
+@@ -1765,11 +1762,6 @@ static void hantrodec_cleanup(int id)
+ 
+ 	//unregister_chrdev(hantrodec_major, "hantrodec");
+ 
+-#ifdef CONFIG_MXC_HANTRO_SECURE
+-	hantro_secure_close_session(id);
+-	hantro_secure_release_shm(id);
+-#endif
+-
+ 	PDEBUG("hantrodec: module removed\n");
+ 
+ }
+@@ -1788,14 +1780,18 @@ static int CheckHwId(hantrodec_t *dev)
+ 	int found = 0;
+ 
+ 	//for (i = 0; i < cores; i++) {
+-		if (dev->hwregs != NULL) {
+-			hwid = readl(dev->hwregs);
++#ifndef CONFIG_MXC_HANTRO_SECURE
++		if (dev->hwregs != NULL)
++#endif
++		{
++			hwid = hantro_hwregs_read(dev,0);
++
+ 			pr_debug("hantrodec: Core %d HW ID=0x%16lx\n", dev->core_id, hwid);
+ 			hwid = (hwid >> 16) & 0xFFFF; /* product version only */
+ 
+ 			while (num_hw--) {
+ 				if (hwid == DecHwId[num_hw]) {
+-					pr_debug("hantrodec: Supported HW found at 0x%16lx\n",
++					pr_debug("hantrodec: Supported HW found at 0x%016lx\n",
+ 							multicorebase[dev->core_id]);
+ 					found++;
+ 					dev->hw_id = hwid;
+@@ -1803,7 +1799,7 @@ static int CheckHwId(hantrodec_t *dev)
+ 				}
+ 			}
+ 			if (!found) {
+-				pr_err("hantrodec: Unknown HW found at 0x%16lx\n",	multicorebase[dev->core_id]);
++				pr_err("hantrodec: Unknown HW found at 0x%016lx\n",	multicorebase[dev->core_id]);
+ 				return 0;
+ 			}
+ 			found = 0;
+@@ -1825,6 +1821,7 @@ static int ReserveIO(int i)
+ {
+ 	//int i;
+ 
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 	//for (i = 0; i < HXDEC_MAX_CORES; i++) {
+ 		if (multicorebase[i] != -1) {
+ 			if (!request_mem_region(multicorebase[i], hantrodec_data[i].iosize, "hantrodec0")) {
+@@ -1843,6 +1840,10 @@ static int ReserveIO(int i)
+ 			//hantrodec_data.cores++;
+ 		}
+ 	//}
++#else
++	hantro_secure_alloc_shm(i,DEC_IO_SIZE_MAX);
++	hantro_secure_open_session(i);
++#endif
+ 
+ 	/* check for correct HW */
+ 	if (!CheckHwId(&hantrodec_data[i])) {
+@@ -1864,11 +1865,17 @@ static void ReleaseIO(int i)
+ {
+ 	//int i;
+ 
++#ifndef CONFIG_MXC_HANTRO_SECURE
+ 	//for (i = 0; i < hantrodec_data.cores; i++) {
+ 		if (hantrodec_data[i].hwregs)
+ 			iounmap((void *) hantrodec_data[i].hwregs);
+ 		release_mem_region(multicorebase[i], hantrodec_data[i].iosize);
+ 	//}
++#else
++	hantro_secure_close_session(i);
++	hantro_secure_release_shm(i);
++#endif
++
+ }
+ 
+ #ifndef CONFIG_MXC_HANTRO_SECURE
+@@ -2015,7 +2022,11 @@ static int hantro_dev_probe(struct platform_device *pdev)
+ 				clk_get_rate(hantrodec_data[id].clk.bus));
+ 
+ #ifdef CONFIG_MXC_HANTRO_SECURE
+-	hantro_secure_open_context(id);
++	if (!hantro_secure_open_context(id))
++	{
++		pr_err("hantro: secure context open failed\n");
++		return -ENODEV;
++	}
+ #endif
+ 
+ 	hantro_clk_enable(&hantrodec_data[id].clk);
+diff --git a/drivers/mxc/hantro_secure/Kconfig b/drivers/mxc/hantro_secure/Kconfig
+index 0720fb1159b1..f772d343530e 100644
+--- a/drivers/mxc/hantro_secure/Kconfig
++++ b/drivers/mxc/hantro_secure/Kconfig
+@@ -2,7 +2,7 @@
+ # Codec configuration
+ #
+ 
+-menu "MXC HANTRO(Video Processing Unit) 845 support"
++menu "MXC HANTRO(Video Processing Unit) Secure support"
+ 	depends on ARCH_FSL_IMX8MQ
+ 
+ config MXC_HANTRO_SECURE
+diff --git a/drivers/mxc/hantro_secure/hantrodec_secure.c b/drivers/mxc/hantro_secure/hantrodec_secure.c
+index 6111e8d777ae..5eeb70ba39e2 100644
+--- a/drivers/mxc/hantro_secure/hantrodec_secure.c
++++ b/drivers/mxc/hantro_secure/hantrodec_secure.c
+@@ -27,6 +27,7 @@
+ #define PTA_HANTRO_VPU_CMD_READ				1
+ #define PTA_HANTRO_VPU_CMD_WRITE			2
+ #define PTA_HANTRO_VPU_CMD_WRITE_MULTIPLE	3
++#define PTA_HANTRO_VPU_CMD_READ_MULTIPLE	4
+ 
+ #define HXDEC_MAX_CORES             	    2
+ 
+@@ -200,6 +201,8 @@ void hantro_secure_hwregs_write_multiple(uint32_t Core,
+ 
+ 	if (ctx == NULL)
+ 		return;
++	if (regs == NULL)
++		return;
+ 	// check buffer overflow
+ 	if (offset + size < offset)
+ 		return;
+@@ -231,6 +234,54 @@ void hantro_secure_hwregs_write_multiple(uint32_t Core,
+ 	}
+ }
+ 
++void hantro_secure_hwregs_read_multiple(uint32_t Core,
++		       uint32_t offset, void *regs, uint32_t size)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++	struct tee_context *ctx;
++	struct tee_shm* shm;
++	uint32_t session;
++
++	ctx = get_context(Core);
++
++	if (ctx == NULL)
++		return;
++	if (regs == NULL)
++		return;
++	// check buffer overflow
++	if (offset + size < offset)
++		return;
++
++	session = get_session(Core);
++	shm = get_shm(Core);
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_READ_MULTIPLE function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_READ_MULTIPLE;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = offset;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT;
++	param[1].u.memref.shm_offs = offset;
++	param[1].u.memref.size = size;
++	param[1].u.memref.shm = shm;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_READ_MULTIPLE invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++	}
++
++	memcpy(regs + offset, tee_shm_get_va(shm,offset),size);
++}
++
+ uint32_t hantro_secure_regs_read(uint32_t Core,
+ 		       uint32_t offset)
+ {
+diff --git a/drivers/mxc/hantro_secure/hantrodec_secure.h b/drivers/mxc/hantro_secure/hantrodec_secure.h
+index d23f442a13d6..4715f7ca7fbf 100644
+--- a/drivers/mxc/hantro_secure/hantrodec_secure.h
++++ b/drivers/mxc/hantro_secure/hantrodec_secure.h
+@@ -1,25 +1,11 @@
+-/*****************************************************************************
+- *    The GPL License (GPL)
++/*
++ * Copyright 2019 NXP
+  *
+- *    Copyright (c) 2019 NXP
+- *
+- *    This program is free software; you can redistribute it and/or
+- *    modify it under the terms of the GNU General Public License
+- *    as published by the Free Software Foundation; either version 2
+- *    of the License, or (at your option) any later version.
+- *
+- *    This program is distributed in the hope that it will be useful,
+- *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- *    GNU General Public License for more details.
+- *
+- *    You may obtain a copy of the GNU General Public License
+- *    Version 2 or later at the following locations:
+- *    http://www.opensource.org/licenses/gpl-license.html
+- *    http://www.gnu.org/copyleft/gpl.html
+- *****************************************************************************/
+-#ifndef HANTRO_SECURE_H_
+-#define HANTRO_SECURE_H_
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef _HANTRODEC_SECURE_H_
++#define _HANTRODEC_SECURE_H_
+ 
+ bool hantro_secure_alloc_shm(uint32_t Core, size_t size);
+ 
+@@ -34,6 +20,9 @@ void hantro_secure_hwregs_write_multiple(uint32_t Core,
+ uint32_t hantro_secure_regs_read(uint32_t Core,
+ 		       uint32_t offset);
+ 
++void hantro_secure_hwregs_read_multiple(uint32_t Core,
++		       uint32_t offset, void *regs, uint32_t size);
++
+ bool hantro_secure_wait(uint32_t Core);
+ 
+ bool hantro_secure_open_context(uint32_t Core);
+@@ -44,4 +33,4 @@ bool hantro_secure_open_session(uint32_t Core);
+ 
+ void hantro_secure_close_session(uint32_t Core);
+ 
+-#endif // HANTRO_SECURE_H_
++#endif /* !_HANTRODEC_SECURE_H_ */
+-- 
+2.17.1
+

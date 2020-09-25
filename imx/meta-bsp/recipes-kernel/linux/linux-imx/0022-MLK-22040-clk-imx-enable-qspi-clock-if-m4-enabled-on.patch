@@ -1,0 +1,31 @@
+From e9a56da4cf565c7e675e79740d0cdd7c14826bcc Mon Sep 17 00:00:00 2001
+From: Jacky Bai <ping.bai@nxp.com>
+Date: Tue, 18 Jun 2019 18:51:32 +0800
+Subject: [PATCH 22/52] MLK-22040 clk: imx: enable qspi clock if m4 enabled on
+ imx8mm
+
+Keep the qspi clock always on if M4 is enabled.
+
+Signed-off-by: Jacky Bai <ping.bai@nxp.com>
+(cherry picked from commit 31e2b5653d5d04da1d2c9ace4015fb8e9ee7c96a)
+---
+ drivers/clk/imx/clk-imx8mm.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/clk/imx/clk-imx8mm.c b/drivers/clk/imx/clk-imx8mm.c
+index a122674b7743..c75fcc5b5336 100644
+--- a/drivers/clk/imx/clk-imx8mm.c
++++ b/drivers/clk/imx/clk-imx8mm.c
+@@ -725,6 +725,9 @@ static void __init imx8mm_clocks_init(struct device_node *ccm_node)
+ 			clk_prepare_enable(clks[clks_init_on[i]]);
+ 	}
+ 
++	if (imx_src_is_m4_enabled())
++		clk_prepare_enable(clks[IMX8MM_CLK_QSPI_ROOT]);
++
+ 	clk_set_parent(clks[IMX8MM_CLK_AUDIO_AHB], clks[IMX8MM_SYS_PLL1_800M]);
+ 	clk_set_rate(clks[IMX8MM_CLK_AUDIO_AHB], 400000000);
+ 	clk_set_rate(clks[IMX8MM_CLK_IPG_AUDIO_ROOT], 400000000);
+-- 
+2.17.1
+

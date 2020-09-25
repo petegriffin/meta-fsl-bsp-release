@@ -1,0 +1,28 @@
+From 45af8c47f068b8c3c0e0a2d7b289cd7e62090371 Mon Sep 17 00:00:00 2001
+From: Peter Chen <peter.chen@nxp.com>
+Date: Thu, 11 Jul 2019 17:18:41 +0800
+Subject: [PATCH 01/52] MLK-22253-1 Revert "MLK-22094 usb: cdns3: include head
+ directory to find it"
+
+This reverts commit b0067d4b7c4e6f11625d3989b903189d73a45363,
+which is from imx8qxp c0.
+
+Signed-off-by: Peter Chen <peter.chen@nxp.com>
+---
+ drivers/usb/cdns3/Makefile | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/drivers/usb/cdns3/Makefile b/drivers/usb/cdns3/Makefile
+index 0c3813da2d1a..f76e772c2587 100644
+--- a/drivers/usb/cdns3/Makefile
++++ b/drivers/usb/cdns3/Makefile
+@@ -1,6 +1,3 @@
+-# define_trace.h needs to know how to find our header
+-CFLAGS_trace.o			:= -I$(src)
+-
+ obj-$(CONFIG_USB_CDNS3)		+= cdns3.o
+ 
+ cdns3-y				:= core.o
+-- 
+2.17.1
+

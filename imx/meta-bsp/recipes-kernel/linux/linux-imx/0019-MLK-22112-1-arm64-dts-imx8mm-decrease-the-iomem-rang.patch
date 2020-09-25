@@ -1,0 +1,35 @@
+From 6fd9a885bc90ba13de6394fad2673814dd5c7f04 Mon Sep 17 00:00:00 2001
+From: Robby Cai <robby.cai@nxp.com>
+Date: Fri, 14 Jun 2019 10:19:55 +0800
+Subject: [PATCH 19/52] MLK-22112-1 arm64: dts: imx8mm: decrease the iomem
+ range for csi bridge
+
+it's conflicted with dispmix-reset device and will meet the following error.
+
+[    1.630523] mx6s-csi 32e20000.csi1_bridge: can't request region for resource [mem 0x32e20000-0x32e2ffff]
+
+decrease the range to avoid the conflict.
+
+Signed-off-by: Robby Cai <robby.cai@nxp.com>
+Reviewed-by: Fancy Fang <chen.fang@nxp.com>
+(cherry picked from commit b0e530f7598e6bc315e68adff310e9f7f5a452d9)
+---
+ arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi b/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
+index 2cd52f5f2424..3caf9c91fdc5 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
++++ b/arch/arm64/boot/dts/freescale/fsl-imx8mm.dtsi
+@@ -291,7 +291,7 @@
+ 
+ 	csi1_bridge: csi1_bridge@32e20000 {
+ 		compatible = "fsl,imx8mm-csi", "fsl,imx8mq-csi", "fsl,imx6s-csi";
+-		reg = <0x0 0x32e20000 0x0 0x10000>;
++		reg = <0x0 0x32e20000 0x0 0x1000>;
+ 		interrupts = <GIC_SPI 16 IRQ_TYPE_LEVEL_HIGH>;
+ 		clocks = <&clk IMX8MM_CLK_DISP_AXI_ROOT>,
+ 			<&clk IMX8MM_CLK_CSI1_ROOT>,
+-- 
+2.17.1
+

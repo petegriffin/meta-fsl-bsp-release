@@ -1,0 +1,27 @@
+From e51509d8e4429deb66d3a8221522bcea3fad12f2 Mon Sep 17 00:00:00 2001
+From: Cyrille Fleury <cyrille.fleury@nxp.com>
+Date: Tue, 7 Apr 2020 11:50:33 +0200
+Subject: [PATCH 38/52] MMIOT-117: Start optee driver earlier, to allow linux
+ to interact with OPTEE quicker
+
+Signed-off-by: Cyrille Fleury <cyrille.fleury@nxp.com>
+---
+ drivers/tee/optee/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/tee/optee/core.c b/drivers/tee/optee/core.c
+index 3f01459529eb..68435f42db41 100644
+--- a/drivers/tee/optee/core.c
++++ b/drivers/tee/optee/core.c
+@@ -679,7 +679,7 @@ static int __init optee_driver_init(void)
+ 
+ 	return 0;
+ }
+-module_init(optee_driver_init);
++subsys_initcall_sync(optee_driver_init);
+ 
+ static void __exit optee_driver_exit(void)
+ {
+-- 
+2.17.1
+

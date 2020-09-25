@@ -1,0 +1,72 @@
+From ccae4e03ad98b782cfdd1c758b74244c4bee810b Mon Sep 17 00:00:00 2001
+From: Alexandre Jutras <alexandre.jutras@nxp.com>
+Date: Wed, 25 Mar 2020 09:13:15 -0400
+Subject: [PATCH 37/52] MMIOT-459: hdmi: Add support for 6 audio channels
+
+Signed-off-by: Alexandre Jutras <alexandre.jutras@nxp.com>
+---
+ drivers/gpu/drm/imx/hdp/imx-hdp-audio.c | 2 ++
+ drivers/mxc/hdp/API_Audio.c             | 9 ++++++++-
+ sound/soc/fsl/imx-cdnhdmi.c             | 3 ++-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+ mode change 100644 => 100755 drivers/mxc/hdp/API_Audio.c
+
+diff --git a/drivers/gpu/drm/imx/hdp/imx-hdp-audio.c b/drivers/gpu/drm/imx/hdp/imx-hdp-audio.c
+index 19e9176784a6..f43e451775b7 100644
+--- a/drivers/gpu/drm/imx/hdp/imx-hdp-audio.c
++++ b/drivers/gpu/drm/imx/hdp/imx-hdp-audio.c
+@@ -76,6 +76,8 @@ static void imx_hdmi_audio_avi_set(state_struct *state,
+ 		frame.channel_allocation = 0;
+ 	else if (channels == 4)
+ 		frame.channel_allocation = 0x3;
++    else if (channels == 6)
++        frame.channel_allocation = 0xB;
+ 	else if (channels == 8)
+ 		frame.channel_allocation = 0x13;
+ 
+diff --git a/drivers/mxc/hdp/API_Audio.c b/drivers/mxc/hdp/API_Audio.c
+old mode 100644
+new mode 100755
+index f70da60b9861..85a241c7b9d9
+--- a/drivers/mxc/hdp/API_Audio.c
++++ b/drivers/mxc/hdp/API_Audio.c
+@@ -89,6 +89,13 @@ CDN_API_STATUS CDN_API_AudioConfigCore(state_struct *state,
+ 	int i;
+ 	int lanesParam;
+ 	u32 I2S_DEC_PORT_EN_Val;
++    u32 disable_port3 = 0;
++
++    if (numOfChannels == 6)
++    {
++        numOfChannels = 8;
++        disable_port3 = 1;
++    }
+ 
+ 	if (numOfChannels == 2) {
+ 		if (lanes == 1)
+@@ -103,7 +110,7 @@ CDN_API_STATUS CDN_API_AudioConfigCore(state_struct *state,
+ 			      ADDR_SOURCE_AIF_DECODER + (AUDIO_SRC_CNFG << 2),
+ 			      0x20000);
+ 		cdn_apb_write(state,
+-			      ADDR_SOURCE_AIF_SMPL2PCKT + (FIFO_CNTL << 2), 2);
++			      ADDR_SOURCE_AIF_SMPL2PCKT + (FIFO_CNTL << 2), 2 | (disable_port3 << 4));
+ 		cdn_apb_write(state,
+ 			      ADDR_SOURCE_AIF_SMPL2PCKT + (SMPL2PKT_CNFG << 2),
+ 			      F_MAX_NUM_CH(numOfChannels - 1) |
+diff --git a/sound/soc/fsl/imx-cdnhdmi.c b/sound/soc/fsl/imx-cdnhdmi.c
+index 8dc9953a26a0..48df3da614bf 100644
+--- a/sound/soc/fsl/imx-cdnhdmi.c
++++ b/sound/soc/fsl/imx-cdnhdmi.c
+@@ -454,7 +454,8 @@ static int imx_cdnhdmi_probe(struct platform_device *pdev)
+ 	data->support_channels[0] = 2;
+ 	data->support_channels[1] = 4;
+ 	data->support_channels[2] = 8;
+-	data->support_channels_num = 3;
++	data->support_channels[3] = 6;
++	data->support_channels_num = 4;
+ 
+ 	of_property_read_u32(pdev->dev.of_node, "protocol",
+ 					&data->protocol);
+-- 
+2.17.1
+

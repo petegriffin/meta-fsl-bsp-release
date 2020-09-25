@@ -1,0 +1,896 @@
+From 3b142cbd46c8e430f05528c5641e3076ae5356d6 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Thu, 12 Sep 2019 18:31:29 +0200
+Subject: [PATCH 44/52] MMIOT-192 : Add shared mem optim + code refactoring
+
+---
+ drivers/mxc/hantro_845/Kconfig            |  10 +-
+ drivers/mxc/hantro_845/Makefile           |   1 +
+ drivers/mxc/hantro_845/hantrodec_845s.c   | 313 +++++++---------------
+ drivers/mxc/hantro_845/hantrodec_secure.c | 262 ++++++++++++++++++
+ drivers/mxc/hantro_845/hantrodec_secure.h |  44 +++
+ 5 files changed, 417 insertions(+), 213 deletions(-)
+ create mode 100644 drivers/mxc/hantro_845/hantrodec_secure.c
+ create mode 100644 drivers/mxc/hantro_845/hantrodec_secure.h
+
+diff --git a/drivers/mxc/hantro_845/Kconfig b/drivers/mxc/hantro_845/Kconfig
+index aa7507e717c4..b14e35fb40b7 100755
+--- a/drivers/mxc/hantro_845/Kconfig
++++ b/drivers/mxc/hantro_845/Kconfig
+@@ -3,13 +3,19 @@
+ #
+ 
+ menu "MXC HANTRO(Video Processing Unit) 845 support"
+-	depends on ARCH_FSL_IMX8MQ && TEE && OPTEE
++	depends on ARCH_FSL_IMX8MQ
+ 
+ config MXC_HANTRO_845
+ 	tristate "Support for MXC HANTRO(Video Processing Unit) 845"
+-	depends on TEE && OPTEE
+ 	default y
+ 	---help---
+ 	  VPU codec device.
+ 
++config MXC_HANTRO_SECURE
++	tristate "Support for Secure VPU driver with OPTEE"
++	depends on TEE && OPTEE
++	default y
++	---help---
++	  VPU secure driver.
++
+ endmenu
+diff --git a/drivers/mxc/hantro_845/Makefile b/drivers/mxc/hantro_845/Makefile
+index 575756282a8b..98585be5e5a5 100755
+--- a/drivers/mxc/hantro_845/Makefile
++++ b/drivers/mxc/hantro_845/Makefile
+@@ -5,4 +5,5 @@
+ #ccflags-y += -I$(PWD)
+ 
+ obj-$(CONFIG_MXC_HANTRO_845) += hantrodec_845s.o
++obj-$(CONFIG_MXC_HANTRO_SECURE) += hantrodec_secure.o
+ 
+diff --git a/drivers/mxc/hantro_845/hantrodec_845s.c b/drivers/mxc/hantro_845/hantrodec_845s.c
+index 0e63b3bcb7db..78a8fa010c38 100755
+--- a/drivers/mxc/hantro_845/hantrodec_845s.c
++++ b/drivers/mxc/hantro_845/hantrodec_845s.c
+@@ -51,22 +51,9 @@
+ 
+ #include <linux/delay.h>
+ 
+-#include <linux/tee_drv.h>
+-
+-/** @brief  PTA UUID generated at https://www.gguid.com/ */
+-#define PTA_HANTRO_VPU_PTA_UUID {0xf45a8128,0x23ff,0x4949,{0x98,0xa4,0x58,0xcb,0x8a,0xef,0x5a,0x75}}
+-
+-#define PTA_HANTRO_VPU_CMD_WRITE	0
+-#define PTA_HANTRO_VPU_CMD_READ		1
+-#define PTA_HANTRO_VPU_CMD_WAIT		2
+-
+-typedef struct {
+-	uint32_t timeLow;
+-	uint16_t timeMid;
+-	uint16_t timeHiAndVersion;
+-	uint8_t clockSeqAndNode[8];
+-} RTC_UUID;
++#include "hantrodec_secure.h"
+ 
++#define CONFIG_HANTRO_SECURE
+ //#define CONFIG_DEVICE_THERMAL_HANTRO
+ #ifdef CONFIG_DEVICE_THERMAL_HANTRO
+ #include <linux/device_cooling.h>
+@@ -153,7 +140,6 @@ static ulong multicorebase[HXDEC_MAX_CORES] = {
+ 	SOCLE_LOGIC_1_BASE
+ };
+ 
+-
+ static struct class *hantro_class;
+ #define DEVICE_NAME		"mxc_hantro"
+ 
+@@ -181,8 +167,11 @@ static int cores = 2;
+ 
+ /* here's all the must remember stuff */
+ typedef struct {
++#ifdef CONFIG_HANTRO_SECURE
+ 	struct tee_context *ctx;
+  	uint32_t session;
++	struct tee_shm* shm;
++#endif
+ 	//char *buffer;
+ 	unsigned int iosize;
+ 	volatile u8 *hwregs;
+@@ -226,13 +215,14 @@ static void ResetAsic(hantrodec_t *dev);
+ static void dump_regs(hantrodec_t *dev);
+ #endif
+ 
++#ifndef CONFIG_HANTRO_SECURE
+ /* IRQ handler */
+ static irqreturn_t hantrodec_isr(int irq, void *dev_id);
++#endif
+ 
+ static int dec_irq;
+ static int pp_irq;
+ 
+-
+ /* spinlock_t owner_lock = SPIN_LOCK_UNLOCKED; */
+ static DEFINE_SPINLOCK(owner_lock);
+ 
+@@ -254,19 +244,6 @@ static DECLARE_WAIT_QUEUE_HEAD(hw_queue);
+ #define DWL_CLIENT_TYPE_VP9_DEC          11U
+ #define DWL_CLIENT_TYPE_HEVC_DEC         12U
+ 
+-static void uuid_to_octets(uint8_t d[TEE_IOCTL_UUID_LEN], const RTC_UUID *s)
+-{
+-	d[0] = s->timeLow >> 24;
+-	d[1] = s->timeLow >> 16;
+-	d[2] = s->timeLow >> 8;
+-	d[3] = s->timeLow;
+-	d[4] = s->timeMid >> 8;
+-	d[5] = s->timeMid;
+-	d[6] = s->timeHiAndVersion >> 8;
+-	d[7] = s->timeHiAndVersion;
+-	memcpy(d + 8, s->clockSeqAndNode, sizeof(s->clockSeqAndNode));
+-}
+-
+ static int hantro_device_id(struct device *dev)
+ {
+ 	int id;
+@@ -298,89 +275,17 @@ static int hantro_clk_disable(hantrodec_clk *clk)
+ 	return 0;
+ }
+ 
+-static void hantro_secure_regs_write(struct tee_context *ctx, uint32_t session,
+-		       uint32_t offset, uint32_t value)
+-{
+-	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
+-
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+-	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+-	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE;
+-	inv_arg.session = session;
+-	inv_arg.num_params = 4;
+-
+-	/* Fill invoke cmd params */
+-	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-	param[0].u.value.a = offset;
+-	param[0].u.value.b = value;
+-
+-	ret = tee_client_invoke_func(ctx, &inv_arg, param);
+-	if ((ret < 0) || inv_arg.ret) {
+-		pr_err("PTA_HANTRO_VPU_CMD_WRITE invoke function err: 0x%08X 0x%08X\n",
+-		       ret,inv_arg.ret);
+-		return;
+-	}
+-}
+-
+-static uint32_t hantro_secure_regs_read(struct tee_context *ctx, uint32_t session,
+-		       uint32_t offset)
+-{
+-	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
+-
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+-	/* Invoke PTA_HANTRO_VPU_CMD_READ function */
+-	inv_arg.func = PTA_HANTRO_VPU_CMD_READ;
+-	inv_arg.session = session;
+-	inv_arg.num_params = 4;
+-
+-	/* Fill invoke cmd params */
+-	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
+-	param[0].u.value.a = offset;
+-
+-	ret = tee_client_invoke_func(ctx, &inv_arg, param);
+-	if ((ret < 0) || inv_arg.ret) {
+-		pr_err("PTA_HANTRO_VPU_CMD_READ invoke function err: 0x%08X 0x%08X\n",
+-		       ret,inv_arg.ret);
+-		return 0;
+-	}
+-	return param[1].u.value.a;
+-}
+-
+ static int hantro_ctrlblk_reset(hantrodec_t *dev)
+ {
+-	volatile u8 *iobase;
+ 	u32 val;
+-	const RTC_UUID pta_uuid = PTA_HANTRO_VPU_PTA_UUID;
+-	struct tee_ioctl_open_session_arg sess_arg;
+-	uint32_t session = 0;
+-	int result;
+-
+-	memset(&sess_arg, 0, sizeof(sess_arg));
+-
+-	/* Open session with pseudo TA */
+-	uuid_to_octets(sess_arg.uuid, &pta_uuid);
+-	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
+-	sess_arg.num_params = 0;
+-
+-	result = tee_client_open_session(dev->ctx, &sess_arg, NULL);
+-	if ((result < 0) || sess_arg.ret) {
+-		pr_err("unable to open pta session 0x%08X\n",sess_arg.ret);
+-	} else {
+-		session = sess_arg.session;
+-	}
+ 
+ 	//config G1/G2
+ 	hantro_clk_enable(&dev->clk);
+ 
++#ifdef CONFIG_HANTRO_SECURE
++	uint32_t session;
++	
++	session = hantro_secure_open(dev->ctx,0xFFFFFFFF);
+ 	if (session)
+ 	{
+ 		if (dev->core_id == 0) {
+@@ -412,7 +317,12 @@ static int hantro_ctrlblk_reset(hantrodec_t *dev)
+ 			hantro_secure_regs_write(dev->ctx,session, 0x10, 0xFFFFFFFF); // all G2 fuse dec enable
+ 		}
+ 		tee_client_close_session(dev->ctx,session);
+-	} else {
++	}
++	else
++#endif
++	{
++		volatile u8 *iobase;
++
+ 		iobase = (volatile u8 *)ioremap_nocache(BLK_CTL_BASE, 0x10000);
+ 		if (dev->core_id == 0) {
+ 			val = ioread32(iobase);
+@@ -536,10 +446,14 @@ static struct notifier_block hantro_thermal_hot_notifier = {
+ static void hantro_hwregs_write(hantrodec_t *dev,
+ 		       uint32_t offset, uint32_t value)
+ {
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->session)
+ 	{
+ 		hantro_secure_regs_write(dev->ctx,dev->session,offset,value);
+-	} else {
++	}
++	else
++#endif
++	{
+ 		iowrite32(value, dev->hwregs + offset);
+ 	}
+ }
+@@ -547,10 +461,14 @@ static void hantro_hwregs_write(hantrodec_t *dev,
+ static uint32_t hantro_hwregs_read(hantrodec_t *dev,
+ 		       uint32_t offset)
+ {
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->session)
+ 	{
+ 		return hantro_secure_regs_read(dev->ctx,dev->session,offset);
+-	} else {
++	}
++	else
++#endif
++	{
+ 		return ioread32(dev->hwregs + offset);
+ 	}
+ }
+@@ -917,11 +835,25 @@ static long DecFlushRegs(hantrodec_t *dev, struct core_desc *Core)
+ 		/* write dec regs but the status reg[1] to hardware */
+ 		/* both original and extended regs need to be written */
+ 
+-		for (i = 2; i <= HANTRO_DEC_ORG_LAST_REG; i++)
+-			hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++#ifdef CONFIG_HANTRO_SECURE
++		if (dev->shm)
++			hantro_hwregs_write_multiple(dev->ctx,dev->shm,dev->session,2*4,dev->dec_regs,HANTRO_DEC_ORG_LAST_REG*4);
++		else
++#endif
++		{
++			for (i = 2; i <= HANTRO_DEC_ORG_LAST_REG; i++)
++				hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++		}
+ #ifdef USE_64BIT_ENV
+-		for (i = HANTRO_DEC_EXT_FIRST_REG; i <= HANTRO_DEC_EXT_LAST_REG; i++)
+-			hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++#ifdef CONFIG_HANTRO_SECURE
++		if (dev->shm)
++			hantro_hwregs_write_multiple(dev->ctx,dev->shm,dev->session,HANTRO_DEC_EXT_FIRST_REG*4,dev->dec_regs,HANTRO_DEC_ORG_LAST_REG*4);
++		else
++#endif
++		{
++			for (i = HANTRO_DEC_EXT_FIRST_REG; i <= HANTRO_DEC_EXT_LAST_REG; i++)
++				hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++		}
+ #endif
+ 	} else {
+ 		ret = copy_from_user(dev->dec_regs, Core->regs, HANTRO_G2_DEC_REGS*4);
+@@ -931,8 +863,15 @@ static long DecFlushRegs(hantrodec_t *dev, struct core_desc *Core)
+ 		}
+ 
+ 		/* write all regs but the status reg[1] to hardware */
+-		for (i = 2; i <= HANTRO_G2_DEC_LAST_REG; i++)
+-			hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++#ifdef CONFIG_HANTRO_SECURE
++		if (dev->shm)
++			hantro_hwregs_write_multiple(dev->ctx,dev->shm,dev->session,2*4,dev->dec_regs,HANTRO_G2_DEC_LAST_REG*4);
++		else
++#endif
++		{
++			for (i = 2; i <= HANTRO_G2_DEC_LAST_REG; i++)
++				hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++		}
+ 	}
+ 
+ 	/* write the status register, which may start the decoder */
+@@ -1036,31 +975,15 @@ static long WaitDecReadyAndRefreshRegs(hantrodec_t *dev, struct core_desc *Core)
+ 
+ 	PDEBUG("wait_event_interruptible DEC[%d]\n", dev->core_id);
+ 
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->session)
+ 	{
+-		int ret = 0;
+-		struct tee_ioctl_invoke_arg inv_arg;
+-		struct tee_param param[4];
+-
+-		memset(&inv_arg, 0, sizeof(inv_arg));
+-		memset(&param, 0, sizeof(param));
+-
+-		/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+-		inv_arg.func = PTA_HANTRO_VPU_CMD_WAIT;
+-		inv_arg.session = dev->session;
+-		inv_arg.num_params = 4;
+-
+-		/* Fill invoke cmd params */
+-		param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-		param[0].u.value.a = 200; // 200ms timeout
+-
+-		ret = tee_client_invoke_func(dev->ctx, &inv_arg, param);
+-		if ((ret < 0) || inv_arg.ret) {
+-			pr_err("PTA_HANTRO_VPU_CMD_WAIT invoke function err: 0x%08X 0x%08X\n",
+-			       ret,inv_arg.ret);
++		if (hantro_secure_wait(dev->ctx,dev->session))
+ 			return -EINVAL;
+-		}		
+-	} else {
++	}
++	else
++#endif
++	{
+ 		//ret = wait_event_interruptible_timeout(dec_wait_queue, CheckDecIrq(dev), msecs_to_jiffies(200));
+ 		ret = wait_event_timeout(dec_wait_queue, CheckDecIrq(dev), msecs_to_jiffies(200));
+ 		if (ret == -ERESTARTSYS) {
+@@ -1099,11 +1022,25 @@ static long PPFlushRegs(hantrodec_t *dev, struct core_desc *Core)
+ 
+ 	/* write all regs but the status reg[1] to hardware */
+ 	/* both original and extended regs need to be written */
+-	for (i = HANTRO_PP_ORG_FIRST_REG + 1; i <= HANTRO_PP_ORG_LAST_REG; i++)
+-		hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++#ifdef CONFIG_HANTRO_SECURE
++	if (dev->shm)
++		hantro_hwregs_write_multiple(dev->ctx,dev->shm,dev->session,(HANTRO_PP_ORG_FIRST_REG+1)*4,dev->dec_regs,HANTRO_PP_ORG_LAST_REG*4);
++	else
++#endif
++	{
++		for (i = HANTRO_PP_ORG_FIRST_REG + 1; i <= HANTRO_PP_ORG_LAST_REG; i++)
++			hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++	}
+ #ifdef USE_64BIT_ENV
+-	for (i = HANTRO_PP_EXT_FIRST_REG; i <= HANTRO_PP_EXT_LAST_REG; i++)
+-		hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++#ifdef CONFIG_HANTRO_SECURE
++	if (dev->shm)
++		hantro_hwregs_write_multiple(dev->ctx,dev->shm,dev->session,HANTRO_PP_EXT_FIRST_REG*4,dev->dec_regs,HANTRO_PP_EXT_LAST_REG*4);
++	else
++#endif
++	{
++		for (i = HANTRO_PP_EXT_FIRST_REG; i <= HANTRO_PP_EXT_LAST_REG; i++)
++			hantro_hwregs_write(dev,i*4,dev->dec_regs[i]);
++	}
+ #endif
+ 	/* write the stat reg, which may start the PP */
+ 	hantro_hwregs_write(dev,HANTRO_PP_ORG_FIRST_REG * 4,dev->dec_regs[HANTRO_PP_ORG_FIRST_REG]);
+@@ -1238,31 +1175,15 @@ static long WaitCoreReady(const struct file *filp, int *id)
+ 
+ 	PDEBUG("wait_event_interruptible CORE\n");
+ 
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->session)
+ 	{
+-		int ret = 0;
+-		struct tee_ioctl_invoke_arg inv_arg;
+-		struct tee_param param[4];
+-
+-		memset(&inv_arg, 0, sizeof(inv_arg));
+-		memset(&param, 0, sizeof(param));
+-
+-		/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+-		inv_arg.func = PTA_HANTRO_VPU_CMD_WAIT;
+-		inv_arg.session = dev->session;
+-		inv_arg.num_params = 4;
+-
+-		/* Fill invoke cmd params */
+-		param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-		param[0].u.value.a = 200; // 200ms timeout
+-
+-		ret = tee_client_invoke_func(dev->ctx, &inv_arg, param);
+-		if ((ret < 0) || inv_arg.ret) {
+-			pr_err("PTA_HANTRO_VPU_CMD_WAIT invoke function err: 0x%08X 0x%08X\n",
+-			       ret,inv_arg.ret);
++		if (hantro_secure_wait(dev->ctx,dev->session))
+ 			return -EINVAL;
+-		}		
+-	} else {
++	}
++	else
++#endif
++	{
+ 		if (wait_event_interruptible(dec_wait_queue, CheckCoreIrq(filp, id))) {
+ 			pr_err("CORE  failed to wait_event_interruptible interrupted\n");
+ 			return -ERESTARTSYS;
+@@ -1758,25 +1679,12 @@ static const struct file_operations hantrodec_fops = {
+  *Return type     : int
+  *---------------------------------------------------------------------------
+  */
+-static int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
+-				const void *data)
+-{
+-	if (ver->impl_id == TEE_IMPL_ID_OPTEE)
+-		return 1;
+-	else
+-		return 0;
+-}
+-
+ static int hantrodec_init(struct platform_device *pdev, int id)
+ {
+ 	int result;
+ 	struct device *temp_class;
+ 	hantrodec_t *dev = &hantrodec_data[id];
+ 
+-	const RTC_UUID pta_uuid = PTA_HANTRO_VPU_PTA_UUID;
+-	struct tee_ioctl_open_session_arg sess_arg;
+-	struct tee_param param[4];
+-
+ 	//dec_irq = 0;
+ 	//pp_irq = 0;
+ 	pr_debug("hantrodec: Init multi Core[0] at 0x%16lx\n"
+@@ -1831,7 +1739,7 @@ static int hantrodec_init(struct platform_device *pdev, int id)
+ 	/* reset hardware */
+ 	ResetAsic(dev);
+ 
+-#if 0
++#ifndef CONFIG_HANTRO_SECURE
+ 	int irq;
+ 	/* register irq for each core*/
+ 	irq = platform_get_irq_byname(pdev, "irq_hantro");
+@@ -1859,25 +1767,10 @@ static int hantrodec_init(struct platform_device *pdev, int id)
+ 	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
+ #endif
+ 
+-	memset(&sess_arg, 0, sizeof(sess_arg));
+-	memset(&param, 0, sizeof(param));
+-
+-	/* Open session with pseudo TA */
+-	uuid_to_octets(sess_arg.uuid, &pta_uuid);
+-	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
+-	sess_arg.num_params = 4;
+-
+-	/* Fill invoke cmd params */
+-	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
+-	param[0].u.value.a = id;
+-
+-	result = tee_client_open_session(dev->ctx, &sess_arg, param);
+-	if ((result < 0) || sess_arg.ret) {
+-		pr_err("unable to open pta session 0x%08X\n",sess_arg.ret);
+-		dev->session = 0;
+-	} else {
+-		dev->session = sess_arg.session;
+-	}
++#ifdef CONFIG_HANTRO_SECURE
++	dev->shm = alloc_shm(dev->ctx,DEC_IO_SIZE_MAX/4);
++	dev->session = hantro_secure_open(dev->ctx,id);
++#endif
+ 
+ 	pr_info("hantrodec %d : module inserted. Major = %d\n", id, hantrodec_major);
+ 
+@@ -1916,10 +1809,16 @@ static void hantrodec_cleanup(int id)
+ 
+ 	//unregister_chrdev(hantrodec_major, "hantrodec");
+ 
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->session)
+ 	{
+ 		tee_client_close_session(dev->ctx, dev->session);
+ 	}
++	if (dev->shm)
++	{
++		release_shm(dev->shm);
++	}
++#endif
+ 
+ 	PDEBUG("hantrodec: module removed\n");
+ 
+@@ -2022,6 +1921,7 @@ static void ReleaseIO(int i)
+ 	//}
+ }
+ 
++#ifndef CONFIG_HANTRO_SECURE
+ /*---------------------------------------------------------------------------
+  *Function name   : hantrodec_isr
+  *Description     : interrupt handler
+@@ -2072,6 +1972,7 @@ static irqreturn_t hantrodec_isr(int irq, void *dev_id)
+ 	(void)hwregs;
+ 	return IRQ_RETVAL(handled);
+ }
++#endif
+ 
+ /*---------------------------------------------------------------------------
+  *Function name   : ResetAsic
+@@ -2135,11 +2036,6 @@ static int hantro_dev_probe(struct platform_device *pdev)
+ 	struct resource *res;
+ 	unsigned long reg_base;
+ 	int id;
+-	struct tee_ioctl_version_data vers = {
+-		.impl_id = TEE_OPTEE_CAP_TZ,
+-		.impl_caps = TEE_IMPL_ID_OPTEE,
+-		.gen_caps = TEE_GEN_CAP_VPU,
+-	};
+ 
+ 	id = hantro_device_id(&pdev->dev);
+ 	if (id < 0)
+@@ -2168,16 +2064,9 @@ static int hantro_dev_probe(struct platform_device *pdev)
+ 	pr_debug("hantro: dec, bus clock: 0x%lX, 0x%lX\n", clk_get_rate(hantrodec_data[id].clk.dec),
+ 				clk_get_rate(hantrodec_data[id].clk.bus));
+ 
+-	hantrodec_data[id].ctx = tee_client_open_context(NULL, hantrodec_optee_match,
+-					     NULL, &vers);
+-
+-	if (IS_ERR(hantrodec_data[id].ctx))
+-	{
+-		pr_err("unable to open tee ctx 0x%08X\n",(void*)hantrodec_data[id].ctx);
+-		hantrodec_data[id].ctx = NULL;
+-		err = -EINVAL;					// FIXME: errno
+-		goto error;
+-	}
++#ifdef CONFIG_HANTRO_SECURE
++	hantrodec_data[id].ctx = hantro_secure_open_context();
++#endif
+ 
+ 	hantro_clk_enable(&hantrodec_data[id].clk);
+ 	pm_runtime_enable(&pdev->dev);
+@@ -2234,12 +2123,14 @@ static int hantro_dev_remove(struct platform_device *pdev)
+ 	HANTRO_UNREG_THERMAL_NOTIFIER(&hantro_thermal_hot_notifier);
+ #endif
+ 
++#ifdef CONFIG_HANTRO_SECURE
+ 	if (dev->ctx)
+ 	{
+ 		tee_client_close_context(dev->ctx);
+ 
+ 		dev->ctx = NULL;
+ 	}
++#endif
+ 
+ 	return 0;
+ }
+diff --git a/drivers/mxc/hantro_845/hantrodec_secure.c b/drivers/mxc/hantro_845/hantrodec_secure.c
+new file mode 100644
+index 000000000000..462f9909d127
+--- /dev/null
++++ b/drivers/mxc/hantro_845/hantrodec_secure.c
+@@ -0,0 +1,262 @@
++/*****************************************************************************
++ *    The GPL License (GPL)
++ *
++ *    Copyright (c) 2019 NXP
++ *
++ *    This program is free software; you can redistribute it and/or
++ *    modify it under the terms of the GNU General Public License
++ *    as published by the Free Software Foundation; either version 2
++ *    of the License, or (at your option) any later version.
++ *
++ *    This program is distributed in the hope that it will be useful,
++ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *    GNU General Public License for more details.
++ *
++ *    You may obtain a copy of the GNU General Public License
++ *    Version 2 or later at the following locations:
++ *    http://www.opensource.org/licenses/gpl-license.html
++ *    http://www.gnu.org/copyleft/gpl.html
++ *****************************************************************************/
++#include <linux/tee_drv.h>
++
++/** @brief  PTA UUID generated at https://www.gguid.com/ */
++#define PTA_HANTRO_VPU_PTA_UUID {0xf45a8128,0x23ff,0x4949,{0x98,0xa4,0x58,0xcb,0x8a,0xef,0x5a,0x75}}
++
++#define PTA_HANTRO_VPU_CMD_WAIT				0
++#define PTA_HANTRO_VPU_CMD_READ				1
++#define PTA_HANTRO_VPU_CMD_WRITE			2
++#define PTA_HANTRO_VPU_CMD_WRITE_MULTIPLE	3
++
++typedef struct {
++       uint32_t timeLow;
++       uint16_t timeMid;
++       uint16_t timeHiAndVersion;
++       uint8_t clockSeqAndNode[8];
++} RTC_UUID;
++
++struct tee_shm *alloc_shm(struct tee_context *ctx, size_t size)
++{
++	if (ctx == NULL)
++		return NULL;
++
++	return tee_shm_alloc(ctx,size,TEE_SHM_MAPPED);
++}
++
++void release_shm(struct tee_shm *shm)
++{
++	if (shm)
++		tee_shm_free(shm);
++}
++
++void hantro_secure_regs_write(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset, uint32_t value)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	if (ctx == NULL)
++		return;
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = offset;
++	param[0].u.value.b = value;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_WRITE invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++	}
++}
++
++void hantro_hwregs_write_multiple(struct tee_context *ctx, struct tee_shm* shm, uint32_t session,
++		       uint32_t offset, void *regs, uint32_t size)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	if (ctx == NULL)
++		return;
++	// check buffer overflow
++	if (offset + size < offset)
++		return;
++
++	memcpy(tee_shm_get_va(shm,offset),regs + offset,size);
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE_MULTIPLE;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = offset;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT;
++	param[1].u.memref.shm_offs = offset;
++	param[1].u.memref.size = size;
++	param[1].u.memref.shm = shm;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_WRITE_MULTIPLE invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++	}
++}
++
++uint32_t hantro_secure_regs_read(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	if (ctx == NULL)
++		return 0;
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_READ function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_READ;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[1].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_OUTPUT;
++	param[0].u.value.a = offset;
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_READ invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++		return 0;
++	}
++	return param[1].u.value.a;
++}
++
++uint32_t hantro_secure_wait(struct tee_context *ctx, uint32_t session)
++{
++	int ret = 0;
++	struct tee_ioctl_invoke_arg inv_arg;
++	struct tee_param param[4];
++
++	if (ctx == NULL)
++		return -1;
++
++	memset(&inv_arg, 0, sizeof(inv_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
++	inv_arg.func = PTA_HANTRO_VPU_CMD_WAIT;
++	inv_arg.session = session;
++	inv_arg.num_params = 4;
++
++	/* Fill invoke cmd params */
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].u.value.a = 200; // 200ms timeout
++
++	ret = tee_client_invoke_func(ctx, &inv_arg, param);
++	if ((ret < 0) || inv_arg.ret) {
++		pr_err("PTA_HANTRO_VPU_CMD_WAIT invoke function err: 0x%08X 0x%08X\n",
++		       ret,inv_arg.ret);
++		return -1;
++	}
++	return 0;
++}
++
++static int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
++				const void *data)
++{
++	if (ver->impl_id == TEE_IMPL_ID_OPTEE)
++		return 1;
++	else
++		return 0;
++}
++
++struct tee_context* hantro_secure_open_context(void)
++{
++	struct tee_context *ctx;
++	struct tee_ioctl_version_data vers = {
++		.impl_id = TEE_OPTEE_CAP_TZ,
++		.impl_caps = TEE_IMPL_ID_OPTEE,
++		.gen_caps = TEE_GEN_CAP_GP,
++	};
++
++	ctx = tee_client_open_context(NULL, hantrodec_optee_match,
++					     NULL, &vers);
++
++	if (IS_ERR(ctx))
++	{
++		pr_err("unable to open tee ctx %p\n",(void*)ctx);
++		ctx = NULL;
++	}
++
++	return ctx;
++}
++
++static void uuid_to_octets(uint8_t d[TEE_IOCTL_UUID_LEN], const RTC_UUID *s)
++{
++       d[0] = s->timeLow >> 24;
++       d[1] = s->timeLow >> 16;
++       d[2] = s->timeLow >> 8;
++       d[3] = s->timeLow;
++       d[4] = s->timeMid >> 8;
++       d[5] = s->timeMid;
++       d[6] = s->timeHiAndVersion >> 8;
++       d[7] = s->timeHiAndVersion;
++       memcpy(d + 8, s->clockSeqAndNode, sizeof(s->clockSeqAndNode));
++}
++
++uint32_t hantro_secure_open(struct tee_context* ctx, uint32_t id)
++{
++	const RTC_UUID pta_uuid = PTA_HANTRO_VPU_PTA_UUID;
++	struct tee_ioctl_open_session_arg sess_arg;
++	struct tee_param param[4];
++	struct tee_param *params = NULL;
++	int result;
++
++	if (ctx == NULL)
++		return 0;
++
++	memset(&sess_arg, 0, sizeof(sess_arg));
++	memset(&param, 0, sizeof(param));
++
++	/* Open session with pseudo TA */
++	uuid_to_octets(sess_arg.uuid, &pta_uuid);
++	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
++
++	if (id != 0xFFFFFFFF)
++	{
++		sess_arg.num_params = 4;
++
++		/* Fill invoke cmd params */
++		param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++		param[0].u.value.a = id;
++
++		params = param;
++	} else {
++		sess_arg.num_params = 0;
++	}
++
++	result = tee_client_open_session(ctx, &sess_arg, params);
++	if ((result < 0) || sess_arg.ret) {
++		pr_err("unable to open pta session 0x%08X\n",sess_arg.ret);
++		return 0;
++	}
++
++	return sess_arg.session;
++}
+diff --git a/drivers/mxc/hantro_845/hantrodec_secure.h b/drivers/mxc/hantro_845/hantrodec_secure.h
+new file mode 100644
+index 000000000000..983d9377648c
+--- /dev/null
++++ b/drivers/mxc/hantro_845/hantrodec_secure.h
+@@ -0,0 +1,44 @@
++/*****************************************************************************
++ *    The GPL License (GPL)
++ *
++ *    Copyright (c) 2019 NXP
++ *
++ *    This program is free software; you can redistribute it and/or
++ *    modify it under the terms of the GNU General Public License
++ *    as published by the Free Software Foundation; either version 2
++ *    of the License, or (at your option) any later version.
++ *
++ *    This program is distributed in the hope that it will be useful,
++ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *    GNU General Public License for more details.
++ *
++ *    You may obtain a copy of the GNU General Public License
++ *    Version 2 or later at the following locations:
++ *    http://www.opensource.org/licenses/gpl-license.html
++ *    http://www.gnu.org/copyleft/gpl.html
++ *****************************************************************************/
++#include <linux/tee_drv.h>
++
++struct tee_shm *alloc_shm(struct tee_context *ctx, size_t size);
++
++void release_shm(struct tee_shm *shm);
++
++void hantro_secure_regs_write(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset, uint32_t value);
++
++void hantro_hwregs_write_multiple(struct tee_context *ctx, struct tee_shm* shm, uint32_t session,
++		       uint32_t offset, void *regs, uint32_t size);
++
++uint32_t hantro_secure_regs_read(struct tee_context *ctx, uint32_t session,
++		       uint32_t offset);
++
++uint32_t hantro_secure_wait(struct tee_context *ctx, uint32_t session);
++
++struct tee_context* hantro_secure_open_context(void);
++
++uint32_t hantro_secure_open(struct tee_context *ctx, uint32_t id);
++
++int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
++				const void *data);
++
+-- 
+2.17.1
+

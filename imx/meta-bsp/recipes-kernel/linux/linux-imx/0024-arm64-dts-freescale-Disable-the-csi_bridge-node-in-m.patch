@@ -1,0 +1,35 @@
+From 5d7a67fff867248e34be6f9261100a85e4efb4b8 Mon Sep 17 00:00:00 2001
+From: Jacky Bai <ping.bai@nxp.com>
+Date: Wed, 24 Jul 2019 15:06:43 +0800
+Subject: [PATCH 24/52] arm64: dts: freescale: Disable the csi_bridge node in
+ m4 dts on imx8mm
+
+In M4 dts, the I2C3 is disabled by default, so the CSI camera sensor
+is disabled too. it is not necessary to keep csi_bridge node enabled
+anymore, just disable it.
+
+Signed-off-by: Jacky Bai <ping.bai@nxp.com>
+Acked-by: Anson Huang <Anson.Huang@nxp.com>
+(cherry picked from commit 93a7f9734d266920d5d1b6f09536021b1777c223)
+---
+ arch/arm64/boot/dts/freescale/fsl-imx8mm-evk-m4.dts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-imx8mm-evk-m4.dts b/arch/arm64/boot/dts/freescale/fsl-imx8mm-evk-m4.dts
+index 52bf4db5b0a1..97ecb5aeaf59 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-imx8mm-evk-m4.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-imx8mm-evk-m4.dts
+@@ -45,6 +45,10 @@
+ 
+ };
+ 
++&csi1_bridge {
++	status = "disabled";
++};
++
+ /*
+  * ATTENTION: M4 may use IPs like below
+  * ECSPI0/ECSPI2, GPIO1/GPIO5, GPT1, I2C3, I2S3, WDOG1, UART4, PWM3, SDMA1
+-- 
+2.17.1
+

@@ -1,0 +1,207 @@
+From 243ace347d9aa01b797439133236e88b3e9fc9a7 Mon Sep 17 00:00:00 2001
+From: Olivier Masse <olivier.masse@nxp.com>
+Date: Wed, 18 Dec 2019 17:27:32 +0100
+Subject: [PATCH 50/52] Hantro secure decoder: add performance counters
+
+Signed-off-by: Olivier Masse <olivier.masse@nxp.com>
+---
+ drivers/mxc/hantro_secure/hantrodec_secure.c | 74 +++++++++++---------
+ 1 file changed, 42 insertions(+), 32 deletions(-)
+
+diff --git a/drivers/mxc/hantro_secure/hantrodec_secure.c b/drivers/mxc/hantro_secure/hantrodec_secure.c
+index 5eeb70ba39e2..fe31730cdbaa 100644
+--- a/drivers/mxc/hantro_secure/hantrodec_secure.c
++++ b/drivers/mxc/hantro_secure/hantrodec_secure.c
+@@ -19,6 +19,7 @@
+  *    http://www.gnu.org/copyleft/gpl.html
+  *****************************************************************************/
+ #include <linux/tee_drv.h>
++#include <linux/time.h>
+ 
+ /** @brief  PTA UUID generated at https://www.gguid.com/ */
+ #define PTA_HANTRO_VPU_PTA_UUID {0xf45a8128,0x23ff,0x4949,{0x98,0xa4,0x58,0xcb,0x8a,0xef,0x5a,0x75}}
+@@ -44,13 +45,28 @@ typedef struct {
+ 	struct tee_shm* shm;
+ } hantro_secure_core;
+ 
+-static hantro_secure_core Cores[HXDEC_MAX_CORES];
++static hantro_secure_core Cores[HXDEC_MAX_CORES] = { 0 };
+ static struct tee_context *base_ctx = NULL;
+ static uint32_t base_session = 0;
+ 
++#ifdef PERF_COUNTERS
++static uint32_t nIT = 0;
++static long long nTimer = 0;
++#endif
++
+ /*
+ 	Utility functions
+ */
++#ifdef PERF_COUNTERS
++static long long get_timer(void)
++{
++	struct timeval cur;
++
++	do_gettimeofday(&cur);
++
++	return timeval_to_ns(&cur);
++}
++#endif
+ 
+ static int hantrodec_optee_match(struct tee_ioctl_version_data *ver,
+ 				const void *data)
+@@ -156,8 +172,8 @@ void hantro_secure_regs_write(uint32_t Core,
+ 		       uint32_t offset, uint32_t value)
+ {
+ 	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_invoke_arg inv_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 	struct tee_context *ctx;
+ 	uint32_t session;
+ 
+@@ -167,9 +183,6 @@ void hantro_secure_regs_write(uint32_t Core,
+ 
+ 	session = get_session(Core);
+ 
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+ 	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+ 	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE;
+ 	inv_arg.session = session;
+@@ -191,8 +204,8 @@ void hantro_secure_hwregs_write_multiple(uint32_t Core,
+ 		       uint32_t offset, void *regs, uint32_t size)
+ {
+ 	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_invoke_arg inv_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 	struct tee_context *ctx;
+ 	struct tee_shm* shm;
+ 	uint32_t session;
+@@ -211,8 +224,6 @@ void hantro_secure_hwregs_write_multiple(uint32_t Core,
+ 	shm = get_shm(Core);
+ 
+ 	memcpy(tee_shm_get_va(shm,offset),regs + offset,size);
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+ 
+ 	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
+ 	inv_arg.func = PTA_HANTRO_VPU_CMD_WRITE_MULTIPLE;
+@@ -238,8 +249,8 @@ void hantro_secure_hwregs_read_multiple(uint32_t Core,
+ 		       uint32_t offset, void *regs, uint32_t size)
+ {
+ 	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_invoke_arg inv_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 	struct tee_context *ctx;
+ 	struct tee_shm* shm;
+ 	uint32_t session;
+@@ -257,9 +268,6 @@ void hantro_secure_hwregs_read_multiple(uint32_t Core,
+ 	session = get_session(Core);
+ 	shm = get_shm(Core);
+ 
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+ 	/* Invoke PTA_HANTRO_VPU_CMD_READ_MULTIPLE function */
+ 	inv_arg.func = PTA_HANTRO_VPU_CMD_READ_MULTIPLE;
+ 	inv_arg.session = session;
+@@ -286,8 +294,8 @@ uint32_t hantro_secure_regs_read(uint32_t Core,
+ 		       uint32_t offset)
+ {
+ 	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_invoke_arg inv_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 	struct tee_context *ctx;
+ 	uint32_t session;
+ 
+@@ -298,9 +306,6 @@ uint32_t hantro_secure_regs_read(uint32_t Core,
+ 
+ 	session = get_session(Core);
+ 
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+ 	/* Invoke PTA_HANTRO_VPU_CMD_READ function */
+ 	inv_arg.func = PTA_HANTRO_VPU_CMD_READ;
+ 	inv_arg.session = session;
+@@ -323,8 +328,8 @@ uint32_t hantro_secure_regs_read(uint32_t Core,
+ bool hantro_secure_wait(uint32_t Core)
+ {
+ 	int ret = 0;
+-	struct tee_ioctl_invoke_arg inv_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_invoke_arg inv_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 
+ 	struct tee_context *ctx;
+ 	uint32_t session;
+@@ -336,16 +341,13 @@ bool hantro_secure_wait(uint32_t Core)
+ 
+ 	session = get_session(Core);
+ 
+-	memset(&inv_arg, 0, sizeof(inv_arg));
+-	memset(&param, 0, sizeof(param));
+-
+-	/* Invoke PTA_HANTRO_VPU_CMD_WRITE function */
++	/* Invoke PTA_HANTRO_VPU_CMD_WAIT function */
+ 	inv_arg.func = PTA_HANTRO_VPU_CMD_WAIT;
+ 	inv_arg.session = session;
+ 	inv_arg.num_params = 4;
+ 
+ 	/* Fill invoke cmd params */
+-	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INPUT;
++	param[0].attr = TEE_IOCTL_PARAM_ATTR_TYPE_VALUE_INOUT;
+ 	param[0].u.value.a = 200; // 200ms timeout
+ 
+ 	ret = tee_client_invoke_func(ctx, &inv_arg, param);
+@@ -355,6 +357,17 @@ bool hantro_secure_wait(uint32_t Core)
+ 		return false;
+ 	}
+ 
++#ifdef PERF_COUNTERS
++	pr_info("VPU response time %d us",param[0].u.value.b);
++	nIT++;
++	if (get_timer() - nTimer > NSEC_PER_SEC)
++	{
++		nTimer = get_timer();
++		pr_info("%ld secure wait / seconds %d",nTimer,nIT);
++		nIT = 0;
++	}
++#endif
++
+ 	return true;
+ }
+ 
+@@ -396,8 +409,8 @@ void hantro_secure_close_context(uint32_t Core)
+ bool hantro_secure_open_session(uint32_t Core)
+ {
+ 	const RTC_UUID pta_uuid = PTA_HANTRO_VPU_PTA_UUID;
+-	struct tee_ioctl_open_session_arg sess_arg;
+-	struct tee_param param[4];
++	struct tee_ioctl_open_session_arg sess_arg = { 0 };
++	struct tee_param param[4] = { 0 };
+ 	struct tee_param *params = NULL;
+ 	int result;
+ 	struct tee_context *ctx;
+@@ -406,9 +419,6 @@ bool hantro_secure_open_session(uint32_t Core)
+ 	if (ctx == NULL)
+ 		return false;
+ 
+-	memset(&sess_arg, 0, sizeof(sess_arg));
+-	memset(&param, 0, sizeof(param));
+-
+ 	/* Open session with pseudo TA */
+ 	uuid_to_octets(sess_arg.uuid, &pta_uuid);
+ 	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
+-- 
+2.17.1
+

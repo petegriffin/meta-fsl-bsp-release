@@ -1,0 +1,59 @@
+From a635cee9e321d80f8576a9a852eee724740efdff Mon Sep 17 00:00:00 2001
+From: ming_qian <ming.qian@nxp.com>
+Date: Wed, 3 Jul 2019 16:04:10 +0800
+Subject: [PATCH 09/52] MLK-22165: VPU Decoder: ignore the invalid timestamp of
+ codec data
+
+To ensure the first timestamp after seek is valid,
+the timestamp of codec data should be ignore,
+and merge its size to the next frame.
+
+Signed-off-by: ming_qian <ming.qian@nxp.com>
+Reviewed-by: Shijie Qin <shijie.qin@nxp.com>
+---
+ drivers/mxc/vpu_malone/vpu_b0.c | 11 +++++++++++
+ drivers/mxc/vpu_malone/vpu_b0.h |  1 +
+ 2 files changed, 12 insertions(+)
+
+diff --git a/drivers/mxc/vpu_malone/vpu_b0.c b/drivers/mxc/vpu_malone/vpu_b0.c
+index d2c5353676fc..4b8728dc3e73 100644
+--- a/drivers/mxc/vpu_malone/vpu_b0.c
++++ b/drivers/mxc/vpu_malone/vpu_b0.c
+@@ -1417,11 +1417,22 @@ static void vpu_dec_receive_ts(struct vpu_ctx *ctx,
+ 		vpu_dbg(LVL_ERR, "%s() get tsm lock fail\n", __func__);
+ 		return;
+ 	}
++
++	if ((vbuf->flags & V4L2_NXP_BUF_FLAG_CODECCONFIG) &&
++			!TSM_TS_IS_VALID(input_ts)) {
++		vpu_dbg(LVL_BIT_TS, "[INPUT  TS]codec data\n");
++		ctx->extra_size += size;
++		up(&ctx->tsm_lock);
++		return;
++	}
++
+ 	if (ctx->tsm_sync_flag) {
+ 		vpu_dbg(LVL_BIT_TS, "resyncTSManager\n");
+ 		resyncTSManager(ctx->tsm, input_ts, tsm_mode);
+ 		ctx->tsm_sync_flag = false;
+ 	}
++	size += ctx->extra_size;
++	ctx->extra_size = 0;
+ 	vpu_dbg(LVL_BIT_TS, "[INPUT  TS]%32lld\n", input_ts);
+ 	TSManagerReceive2(ctx->tsm, input_ts, size);
+ 	ctx->total_ts_bytes += size;
+diff --git a/drivers/mxc/vpu_malone/vpu_b0.h b/drivers/mxc/vpu_malone/vpu_b0.h
+index c97c5c981fdf..80c5e5df0f6e 100644
+--- a/drivers/mxc/vpu_malone/vpu_b0.h
++++ b/drivers/mxc/vpu_malone/vpu_b0.h
+@@ -385,6 +385,7 @@ struct vpu_ctx {
+ 	long total_write_bytes;
+ 	long total_consumed_bytes;
+ 	long total_ts_bytes;
++	u32 extra_size;
+ 	struct semaphore tsm_lock;
+ 	s64 output_ts;
+ 	s64 capture_ts;
+-- 
+2.17.1
+

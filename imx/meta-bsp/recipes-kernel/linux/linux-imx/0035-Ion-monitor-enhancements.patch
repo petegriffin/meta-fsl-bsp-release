@@ -1,0 +1,959 @@
+From 8eeaedd8bc0b770591428755a012dbc5da0e9209 Mon Sep 17 00:00:00 2001
+From: Axel Le Bourhis <axel.lebourhis@nxp.com>
+Date: Mon, 11 Mar 2019 09:11:07 +0100
+Subject: [PATCH 35/52] Ion monitor enhancements.
+
+- If you cat /sys/kernel/debug/ion/<heap>, it will trigger debug tool and give you:
+  Heap size
+  Free space
+  Allocated space
+  Allocated peak
+  Largest free buffer
+  Heap fragmentation in %
+- Added CONFIG_ION_MONITOR flag for kernel compilation.
+- The tool can now be dynamically disable/enabled.
+    echo 1 > /sys/kernel/debug/ion/<heap> to enable
+    echo 0 > /sys/kernel/debug/ion/<heap> to disable
+- The way the metadata are generated is more reliable now.
+  Now, the metadata are updated when we cat the debugfs file.
+  Before, the metadata were updated at allocation time, so it could interfere with the playback.
+  Now, it should be isolated enough to not interfere with playback performances.
+- Heap types supported:
+    - unmapped heap
+    - cma heap
+    - carveout heap
+    - chunk heap
+
+ Conflicts:
+	arch/arm64/configs/android_defconfig
+---
+ arch/arm64/Kconfig.debug                      |  10 +
+ drivers/staging/android/ion/ion.c             |  27 ++-
+ drivers/staging/android/ion/ion.h             |  16 +-
+ .../staging/android/ion/ion_carveout_heap.c   |  74 +++++++
+ drivers/staging/android/ion/ion_chunk_heap.c  |  72 +++++++
+ drivers/staging/android/ion/ion_cma_heap.c    |  70 +++++++
+ .../staging/android/ion/ion_unmapped_heap.c   | 190 ++++++------------
+ include/linux/cma.h                           |   6 +
+ include/linux/genalloc.h                      |  23 +--
+ lib/genalloc.c                                |  87 +++-----
+ mm/cma.c                                      |  43 ++++
+ 11 files changed, 406 insertions(+), 212 deletions(-)
+
+diff --git a/arch/arm64/Kconfig.debug b/arch/arm64/Kconfig.debug
+index cc6bd559af85..2c9c54c8ba86 100644
+--- a/arch/arm64/Kconfig.debug
++++ b/arch/arm64/Kconfig.debug
+@@ -2,6 +2,16 @@ menu "Kernel hacking"
+ 
+ source "lib/Kconfig.debug"
+ 
++config ION_MONITOR
++	bool "Enable ion monitor tool"
++	help
++	  Enabling this option will build the ion monitor tool.
++	  The tool is based on debugfs structure. Each ion heap allocated
++	  will be linked to a debugfs file in /sys/kernel/debug/ion/.
++	  A simple "cat" on the file will trigger a debug function that will
++	  give some informations about the current ion heap.
++	  This tool is useful for debug before production releases.
++
+ config ARM64_PTDUMP_CORE
+ 	def_bool n
+ 
+diff --git a/drivers/staging/android/ion/ion.c b/drivers/staging/android/ion/ion.c
+index e4b6cb0e62ea..3cfb88e9e432 100644
+--- a/drivers/staging/android/ion/ion.c
++++ b/drivers/staging/android/ion/ion.c
+@@ -576,7 +576,6 @@ static int ion_heap_debug_show(struct seq_file *s, void *unused)
+ {
+ 	struct ion_heap *heap = s->private;
+ 	struct ion_device *dev = heap->dev;
+-	seq_puts(s, "\n----- ION HEAP DEBUG SHOW -----\n");
+ 	if(heap->debug_show)
+ 		heap->debug_show(heap, s, unused);
+ 
+@@ -588,8 +587,32 @@ static int ion_heap_debug_open(struct inode *inode, struct file *file)
+ 	return single_open(file, ion_heap_debug_show, inode->i_private);
+ }
+ 
++#ifdef CONFIG_ION_MONITOR
++static ssize_t ion_heap_debug_write(struct file *fp, const char __user *user_buffer,
++	                           size_t count, loff_t *position)
++{
++	struct ion_heap* heap = fp->f_inode->i_private;
++	char ker_buf[count];
++	size_t ret;
++	ret = simple_write_to_buffer(ker_buf, sizeof(ker_buf), position, user_buffer, count);
++	if(ker_buf[0] == '1') {
++		printk("ion monitor tool enabled for %s heap\n", heap->name);
++		heap->debug_state = 1;
++	}
++	else {
++		printk("ion monitor tool disabled for %s heap\n", heap->name);
++		heap->debug_state = 0;
++	}
++	
++	return ret;
++}
++#endif /* CONFIG_ION_MONITOR */
++
+ static const struct file_operations ion_heap_debug_fops = {
+ 	.open           = ion_heap_debug_open,
++#ifdef CONFIG_ION_MONITOR
++	.write          = ion_heap_debug_write,
++#endif /* CONFIG_ION_MONITOR */
+ 	.read           = seq_read,
+ 	.llseek         = seq_lseek,
+ 	.release        = single_release,
+@@ -623,7 +646,7 @@ void ion_device_add_heap(struct ion_heap *heap)
+ 	plist_node_init(&heap->node, -heap->id);
+ 	plist_add(&heap->node, &dev->heaps);
+ 
+-	debug_file = debugfs_create_file(heap->name, 0664, 
++	debug_file = debugfs_create_file(heap->name, 0644, 
+ 	                                 dev->debug_root, heap,
+ 	                                 &ion_heap_debug_fops);
+ 	if (!debug_file) {
+diff --git a/drivers/staging/android/ion/ion.h b/drivers/staging/android/ion/ion.h
+index 4f136a7b78f1..6867093f6447 100644
+--- a/drivers/staging/android/ion/ion.h
++++ b/drivers/staging/android/ion/ion.h
+@@ -188,6 +188,10 @@ struct ion_heap {
+ 	wait_queue_head_t waitqueue;
+ 	struct task_struct *task;
+ 
++	#ifdef CONFIG_ION_MONITOR
++	size_t debug_state;
++	#endif /* CONFIG_ION_MONITOR */
++
+ 	int (*debug_show)(struct ion_heap *heap, struct seq_file *, void *);
+ };
+ 
+@@ -358,16 +362,4 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+ 
+ int ion_query_heaps(struct ion_heap_query *query);
+ 
+-#ifdef CONFIG_ION_MONITOR
+-enum meta_name {
+-	HEAP_SIZE,
+-	FREE_SIZE,
+-	ALLOCATED_SIZE,
+-	ALLOC_PEAK,
+-	LARGEST_FREE_BUF,
+-};
+-
+-size_t get_unmapped_heap_meta(struct ion_heap *heap, int name);
+-#endif /* CONFIG_ION_MONITOR */
+-
+ #endif /* _ION_H */
+diff --git a/drivers/staging/android/ion/ion_carveout_heap.c b/drivers/staging/android/ion/ion_carveout_heap.c
+index ae9f7eeb3646..48d38826fbfb 100644
+--- a/drivers/staging/android/ion/ion_carveout_heap.c
++++ b/drivers/staging/android/ion/ion_carveout_heap.c
+@@ -29,6 +29,8 @@
+ 
+ #define ION_CARVEOUT_ALLOCATE_FAIL	-1
+ 
++#define to_carveout_heap(x) container_of(x, struct ion_carveout_heap, heap)
++
+ struct rmem_carveout {
+ 	phys_addr_t base;
+ 	phys_addr_t size;
+@@ -39,6 +41,13 @@ struct ion_carveout_heap {
+ 	struct ion_heap heap;
+ 	struct gen_pool *pool;
+ 	phys_addr_t base;
++	#ifdef CONFIG_ION_MONITOR
++	size_t size;
++	size_t free_size;
++	size_t allocated_size;
++	size_t allocated_peak;
++	size_t largest_free_buf;
++	#endif /* CONFIG_ION_MONITOR */
+ };
+ 
+ static phys_addr_t ion_carveout_allocate(struct ion_heap *heap,
+@@ -121,6 +130,59 @@ static struct ion_heap_ops carveout_heap_ops = {
+ 	.unmap_kernel = ion_heap_unmap_kernel,
+ };
+ 
++#ifdef CONFIG_ION_MONITOR
++
++/**
++ * update_carveout_heap_info - Update the debug info of the heap
++ * @heap: ion heap
++ */
++static void update_carveout_heap_info(struct ion_heap *heap)
++{
++	struct ion_carveout_heap *carveout_heap = to_carveout_heap(heap);
++
++	carveout_heap->free_size = gen_pool_avail(carveout_heap->pool);
++	carveout_heap->allocated_size = carveout_heap->size - carveout_heap->free_size;
++	if(carveout_heap->allocated_size > carveout_heap->allocated_peak) carveout_heap->allocated_peak = carveout_heap->allocated_size;
++	carveout_heap->largest_free_buf = gen_pool_largest_free_buf(carveout_heap->pool);
++
++}
++
++#endif /* CONFIG_ION_MONITOR */
++
++static int ion_carveout_heap_debug_show(struct ion_heap *heap, struct seq_file *s, void *unused)
++{
++	#ifdef CONFIG_ION_MONITOR
++
++	if(!heap->debug_state) {
++		seq_puts(s, "\n ION monitor tool is disabled.\n");
++		return 0;
++	}
++
++	seq_puts(s, "\n----- ION CARVEOUT HEAP DEBUG -----\n");
++
++	struct ion_carveout_heap *carveout_heap = to_carveout_heap(heap);
++	size_t heap_frag = 0;
++	
++	if(heap->type == ION_HEAP_TYPE_CARVEOUT) {
++		update_carveout_heap_info(heap);
++
++		heap_frag = ((carveout_heap->free_size - carveout_heap->largest_free_buf) * 100) / carveout_heap->free_size;
++
++		seq_printf(s, "%19s %19zu\n", "heap size", carveout_heap->size);
++		seq_printf(s, "%19s %19zu\n", "free size", carveout_heap->free_size);
++		seq_printf(s, "%19s %19zu\n", "allocated size", carveout_heap->allocated_size);
++		seq_printf(s, "%19s %19zu\n", "allocated peak", carveout_heap->allocated_peak);
++		seq_printf(s, "%19s %19zu\n", "largest free buffer", carveout_heap->largest_free_buf);
++		seq_printf(s, "%19s %19zu\n", "heap fragmentation", heap_frag);		
++	}
++	else {
++		pr_err("%s: Invalid heap type for debug: %d\n", __func__, heap->type);
++	}
++	seq_puts(s, "\n");
++	#endif /* CONFIG_ION_MONITOR */
++	return 0;
++}
++
+ struct ion_heap *ion_carveout_heap_create(struct rmem_carveout *heap_data)
+ {
+ 	struct ion_carveout_heap *carveout_heap;
+@@ -152,6 +214,18 @@ struct ion_heap *ion_carveout_heap_create(struct rmem_carveout *heap_data)
+ 	carveout_heap->heap.ops = &carveout_heap_ops;
+ 	carveout_heap->heap.type = ION_HEAP_TYPE_CARVEOUT;
+ 	carveout_heap->heap.flags = ION_HEAP_FLAG_DEFER_FREE;
++	carveout_heap->heap.debug_show = ion_carveout_heap_debug_show;
++
++	#ifdef CONFIG_ION_MONITOR
++	
++	carveout_heap->size = size;
++	carveout_heap->free_size = gen_pool_avail(carveout_heap->pool);
++	carveout_heap->allocated_size = carveout_heap->size - carveout_heap->free_size;
++	carveout_heap->allocated_peak = carveout_heap->allocated_size;
++	carveout_heap->largest_free_buf = gen_pool_largest_free_buf(carveout_heap->pool);
++	carveout_heap->heap.debug_state = 1;
++
++	#endif /* CONFIG_ION_MONITOR */
+ 
+ 	return &carveout_heap->heap;
+ }
+diff --git a/drivers/staging/android/ion/ion_chunk_heap.c b/drivers/staging/android/ion/ion_chunk_heap.c
+index 102c09398317..ab352c538354 100644
+--- a/drivers/staging/android/ion/ion_chunk_heap.c
++++ b/drivers/staging/android/ion/ion_chunk_heap.c
+@@ -23,6 +23,8 @@
+ #include <linux/vmalloc.h>
+ #include "ion.h"
+ 
++#define to_chunk_heap(x) container_of(x, struct ion_chunk_heap, heap)
++
+ struct ion_chunk_heap {
+ 	struct ion_heap heap;
+ 	struct gen_pool *pool;
+@@ -30,8 +32,15 @@ struct ion_chunk_heap {
+ 	unsigned long chunk_size;
+ 	unsigned long size;
+ 	unsigned long allocated;
++	#ifdef CONFIG_ION_MONITOR
++	unsigned long free_size;
++	unsigned long largest_free_buf;
++	unsigned long allocated_peak;
++	#endif /* CONFIG_ION_MONITOR */
+ };
+ 
++
++
+ static int ion_chunk_heap_allocate(struct ion_heap *heap,
+ 				   struct ion_buffer *buffer,
+ 				   unsigned long size,
+@@ -117,6 +126,59 @@ static struct ion_heap_ops chunk_heap_ops = {
+ 	.unmap_kernel = ion_heap_unmap_kernel,
+ };
+ 
++#ifdef CONFIG_ION_MONITOR
++
++/**
++ * update_chunk_heap_info - Update the debug info of the heap
++ * @heap: ion heap
++ */
++static void update_chunk_heap_info(struct ion_heap *heap)
++{
++	struct ion_chunk_heap *chunk_heap = to_chunk_heap(heap);
++
++	chunk_heap->free_size = gen_pool_avail(chunk_heap->pool);
++	if(chunk_heap->allocated > chunk_heap->allocated_peak) chunk_heap->allocated_peak = chunk_heap->allocated;
++	chunk_heap->largest_free_buf = gen_pool_largest_free_buf(chunk_heap->pool);
++
++}
++
++#endif /* CONFIG_ION_MONITOR */
++
++static int ion_chunk_heap_debug_show(struct ion_heap *heap, struct seq_file *s, void *unused)
++{
++	#ifdef CONFIG_ION_MONITOR
++
++	if(!heap->debug_state) {
++		seq_puts(s, "\n ION monitor tool is disabled.\n");
++		return 0;
++	}
++
++	seq_puts(s, "\n----- ION CHUNK HEAP DEBUG -----\n");
++
++	struct ion_chunk_heap *chunk_heap = to_chunk_heap(heap);
++	size_t heap_frag = 0;
++	
++	if(heap->type == ION_HEAP_TYPE_CHUNK) {
++		update_chunk_heap_info(heap);
++
++		heap_frag = ((chunk_heap->free_size - chunk_heap->largest_free_buf) * 100) / chunk_heap->free_size;
++
++		seq_printf(s, "%19s %19zu\n", "heap size", chunk_heap->size);
++		seq_printf(s, "%19s %19zu\n", "free size", chunk_heap->free_size);
++		seq_printf(s, "%19s %19zu\n", "allocated size", chunk_heap->allocated);
++		seq_printf(s, "%19s %19zu\n", "allocated peak", chunk_heap->allocated_peak);
++		seq_printf(s, "%19s %19zu\n", "largest free buffer", chunk_heap->largest_free_buf);
++		seq_printf(s, "%19s %19zu\n", "heap fragmentation", heap_frag);		
++	}
++	else {
++		pr_err("%s: Invalid heap type for debug: %d\n", __func__, heap->type);
++	}
++	seq_puts(s, "\n");
++
++	#endif /* CONFIG_ION_MONITOR */
++	return 0;
++}
++
+ struct ion_heap *ion_chunk_heap_create(struct ion_platform_heap *heap_data)
+ {
+ 	struct ion_chunk_heap *chunk_heap;
+@@ -150,9 +212,19 @@ struct ion_heap *ion_chunk_heap_create(struct ion_platform_heap *heap_data)
+ 	chunk_heap->heap.ops = &chunk_heap_ops;
+ 	chunk_heap->heap.type = ION_HEAP_TYPE_CHUNK;
+ 	chunk_heap->heap.flags = ION_HEAP_FLAG_DEFER_FREE;
++	chunk_heap->heap.debug_show = ion_chunk_heap_debug_show;
+ 	pr_debug("%s: base %pa size %zu\n", __func__,
+ 		 &chunk_heap->base, heap_data->size);
+ 
++	#ifdef CONFIG_ION_MONITOR
++
++	chunk_heap->free_size = gen_pool_avail(chunk_heap->pool);
++	chunk_heap->allocated_peak = chunk_heap->allocated;
++	chunk_heap->largest_free_buf = gen_pool_largest_free_buf(chunk_heap->pool);
++	chunk_heap->heap.debug_state = 1;
++	
++	#endif /* CONFIG_ION_MONITOR */ 
++
+ 	return &chunk_heap->heap;
+ 
+ error_gen_pool_create:
+diff --git a/drivers/staging/android/ion/ion_cma_heap.c b/drivers/staging/android/ion/ion_cma_heap.c
+index fa3e4b7e0c9f..0a92e6b78ecd 100644
+--- a/drivers/staging/android/ion/ion_cma_heap.c
++++ b/drivers/staging/android/ion/ion_cma_heap.c
+@@ -28,6 +28,14 @@
+ struct ion_cma_heap {
+ 	struct ion_heap heap;
+ 	struct cma *cma;
++
++	#ifdef CONFIG_ION_MONITOR
++	size_t heap_size;
++	size_t free_size;
++	size_t allocated_size;
++	size_t allocated_peak;
++	size_t largest_free_buf;
++	#endif /* CONFIG_ION_MONITOR */
+ };
+ 
+ #define to_cma_heap(x) container_of(x, struct ion_cma_heap, heap)
+@@ -110,6 +118,56 @@ static struct ion_heap_ops ion_cma_ops = {
+ 	.unmap_kernel = ion_heap_unmap_kernel,
+ };
+ 
++#ifdef CONFIG_ION_MONITOR
++static void update_cma_heap_info(struct ion_heap* heap) 
++{
++	struct ion_cma_heap *cma_heap;
++	cma_heap = to_cma_heap(heap);
++
++	cma_heap->heap_size = cma_get_size(cma_heap->cma);
++	cma_heap->free_size = cma_get_free_size(cma_heap->cma);
++	cma_heap->allocated_size = cma_heap->heap_size - cma_heap->free_size;
++	if(cma_heap->allocated_size > cma_heap->allocated_peak) cma_heap->allocated_peak = cma_heap->allocated_size;
++	cma_heap->largest_free_buf = cma_get_largest_free_buf(cma_heap->cma);
++}
++#endif /* CONFIG_ION_MONITOR */ 
++
++static int ion_cma_heap_debug_show(struct ion_heap *heap, struct seq_file *s, void *unused)
++{
++	#ifdef CONFIG_ION_MONITOR
++
++	if(!heap->debug_state) {
++		seq_puts(s, "\n ION monitor tool is disabled.\n");
++		return 0;
++	}
++
++	struct ion_cma_heap *cma_heap;
++	size_t heap_frag;
++
++	cma_heap = to_cma_heap(heap);
++	
++	seq_puts(s, "\n----- ION CMA HEAP DEBUG -----\n");
++
++	if(heap->type == ION_HEAP_TYPE_DMA) {
++		update_cma_heap_info(heap);
++
++		heap_frag = ((cma_heap->free_size - cma_heap->largest_free_buf) * 100) / cma_heap->free_size;
++
++		seq_printf(s, "%19s %19zu\n", "heap size", cma_heap->heap_size);
++		seq_printf(s, "%19s %19zu\n", "free size", cma_heap->free_size);
++		seq_printf(s, "%19s %19zu\n", "allocated size", cma_heap->allocated_size);
++		seq_printf(s, "%19s %19zu\n", "allocated peak", cma_heap->allocated_peak);
++		seq_printf(s, "%19s %19zu\n", "largest free buffer", cma_heap->largest_free_buf);
++		seq_printf(s, "%19s %19zu\n", "heap fragmentation", heap_frag);
++	}
++	else {
++		pr_err("%s: Invalid heap type for debug: %d\n", __func__, heap->type);
++	}
++	seq_puts(s, "\n");
++	#endif /* CONFIG_ION_MONITOR */
++	return 0;
++}
++
+ static struct ion_heap *__ion_cma_heap_create(struct cma *cma)
+ {
+ 	struct ion_cma_heap *cma_heap;
+@@ -126,6 +184,18 @@ static struct ion_heap *__ion_cma_heap_create(struct cma *cma)
+ 	 */
+ 	cma_heap->cma = cma;
+ 	cma_heap->heap.type = ION_HEAP_TYPE_DMA;
++
++	#ifdef CONFIG_ION_MONITOR
++	cma_heap->heap.debug_show = ion_cma_heap_debug_show;
++	cma_heap->heap.name = cma_get_name(cma);
++	cma_heap->heap.debug_state = 1;
++	cma_heap->heap_size = cma_get_size(cma_heap->cma);
++	cma_heap->free_size = cma_get_free_size(cma_heap->cma);
++	cma_heap->allocated_size = cma_heap->heap_size - cma_heap->free_size;
++	cma_heap->allocated_peak = cma_heap->allocated_size;
++	cma_heap->largest_free_buf = cma_get_largest_free_buf(cma_heap->cma);
++	#endif /* CONFIG_ION_MONITOR */
++
+ 	return &cma_heap->heap;
+ }
+ 
+diff --git a/drivers/staging/android/ion/ion_unmapped_heap.c b/drivers/staging/android/ion/ion_unmapped_heap.c
+index adffaa177380..2efc586c01be 100644
+--- a/drivers/staging/android/ion/ion_unmapped_heap.c
++++ b/drivers/staging/android/ion/ion_unmapped_heap.c
+@@ -46,6 +46,8 @@
+ 
+ #define MAX_UNMAPPED_AREA 2
+ 
++#define to_unmapped_heap(x) container_of(x, struct ion_unmapped_heap, heap)
++
+ struct rmem_unmapped {
+ 	phys_addr_t base;
+ 	phys_addr_t size;
+@@ -60,6 +62,12 @@ struct ion_unmapped_heap {
+ 	struct gen_pool *pool;
+ 	phys_addr_t base;
+ 	size_t          size;
++	#ifdef CONFIG_ION_MONITOR
++	size_t          free_size;
++	size_t          allocated_size;
++	size_t          allocated_peak;
++	size_t          largest_free_buf;
++	#endif /* CONFIG_ION_MONITOR */
+ };
+ 
+ struct unmapped_buffer_priv {
+@@ -76,6 +84,8 @@ static struct device *heap2dev(struct ion_heap *heap)
+ 	return heap->dev->dev.this_device;
+ }
+ 
++
++
+ static phys_addr_t ion_unmapped_allocate(struct ion_heap *heap,
+ 					   unsigned long size,
+ 					   phys_addr_t *addr)
+@@ -233,11 +243,56 @@ static struct ion_heap_ops unmapped_heap_ops = {
+ 	return &umh->heap;
+ }*/
+ 
++#ifdef CONFIG_ION_MONITOR
++
++/**
++ * update_unmapped_heap_info - Update the debug info of the heap
++ * @heap: ion heap
++ */
++static void update_unmapped_heap_info(struct ion_heap *heap)
++{
++	struct ion_unmapped_heap *umh = to_unmapped_heap(heap);
++
++	umh->free_size = gen_pool_avail(umh->pool);
++	umh->allocated_size = umh->size - umh->free_size;
++	if(umh->allocated_size > umh->allocated_peak) umh->allocated_peak = umh->allocated_size;
++	umh->largest_free_buf = gen_pool_largest_free_buf(umh->pool);
++
++}
++
++#endif /* CONFIG_ION_MONITOR */
++
+ static int ion_unmapped_heap_debug_show(struct ion_heap *heap, struct seq_file *s, void *unused)
+ {
+-	struct ion_device *dev = heap->dev;
+-	seq_puts(s, "\n----- ION UNMAPPED HEAP DEBUG SHOW -----\n");
++	#ifdef CONFIG_ION_MONITOR
++
++	if(!heap->debug_state) {
++		seq_puts(s, "\n ION monitor tool is disabled.\n");
++		return 0;
++	}
++
++	seq_puts(s, "\n----- ION UNMAPPED HEAP DEBUG -----\n");
++
++	struct ion_unmapped_heap *umh = to_unmapped_heap(heap);
++	size_t heap_frag = 0;
+ 	
++	if(heap->type == ION_HEAP_TYPE_UNMAPPED) {
++		update_unmapped_heap_info(heap);
++
++		heap_frag = ((umh->free_size - umh->largest_free_buf) * 100) / umh->free_size;
++
++		seq_printf(s, "%19s %19zu\n", "heap size", umh->size);
++		seq_printf(s, "%19s %19zu\n", "free size", umh->free_size);
++		seq_printf(s, "%19s %19zu\n", "allocated size", umh->allocated_size);
++		seq_printf(s, "%19s %19zu\n", "allocated peak", umh->allocated_peak);
++		seq_printf(s, "%19s %19zu\n", "largest free buffer", umh->largest_free_buf);
++		seq_printf(s, "%19s %19zu\n", "heap fragmentation", heap_frag);		
++	}
++	else {
++		pr_err("%s: Invalid heap type for debug: %d\n", __func__, heap->type);
++	}
++	seq_puts(s, "\n");
++	#endif /* CONFIG_ION_MONITOR */
+ 	return 0;
+ }
+ 
+@@ -261,11 +316,7 @@ struct ion_heap *ion_unmapped_heap_create(struct rmem_unmapped *heap_data)
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	// ensure memory address align to 64K which can meet VPU requirement.
+-	#ifdef CONFIG_ION_MONITOR
+-	unmapped_heap->pool = gen_pool_meta_create(PAGE_SHIFT+4, -1);
+-	#else
+ 	unmapped_heap->pool = gen_pool_create(PAGE_SHIFT+4, -1);
+-	#endif /* CONFIG_ION_MONITOR */
+ 
+ 	if (!unmapped_heap->pool) {
+ 		kfree(unmapped_heap);
+@@ -277,11 +328,13 @@ struct ion_heap *ion_unmapped_heap_create(struct rmem_unmapped *heap_data)
+ 		     -1);
+ 	
+ 	#ifdef CONFIG_ION_MONITOR
+-	struct gen_pool_meta *meta = 
+-		container_of(unmapped_heap->pool, struct gen_pool_meta, pool);
+-	set_meta(meta, HEAP_SIZE, heap_data->size);
+-	set_meta(meta, LARGEST_FREE_BUF, heap_data->size);
+-	set_meta(meta, FREE_SIZE, heap_data->size);
++
++	unmapped_heap->free_size = gen_pool_avail(unmapped_heap->pool);
++	unmapped_heap->allocated_size = unmapped_heap->size - unmapped_heap->free_size;
++	unmapped_heap->allocated_peak = unmapped_heap->allocated_size;
++	unmapped_heap->largest_free_buf = gen_pool_largest_free_buf(unmapped_heap->pool);
++	unmapped_heap->heap.debug_state = 1;
++
+ 	#endif /* CONFIG_ION_MONITOR */
+ 
+ 	unmapped_heap->heap.ops = &unmapped_heap_ops;
+@@ -289,7 +342,7 @@ struct ion_heap *ion_unmapped_heap_create(struct rmem_unmapped *heap_data)
+ 	unmapped_heap->heap.flags = ION_HEAP_FLAG_DEFER_FREE;
+ 	unmapped_heap->heap.name = heap_data->name;
+ 	unmapped_heap->heap.debug_show = ion_unmapped_heap_debug_show;
+-
++	
+ 	return &unmapped_heap->heap;
+ }
+ 
+@@ -315,14 +368,9 @@ static int ion_add_unmapped_heap(void)
+ void ion_unmapped_heap_destroy(struct ion_heap *heap)
+ {
+ 	struct ion_unmapped_heap *umh =
+-	    container_of(heap, struct  ion_unmapped_heap, heap);
+-	#ifdef CONFIG_ION_MONITOR
+-	struct gen_pool_meta *meta =
+-		container_of(umh->pool, struct gen_pool_meta, pool);
+-	gen_pool_meta_destroy(meta);
+-	#else     
++	    container_of(heap, struct  ion_unmapped_heap, heap);  
++
+ 	gen_pool_destroy(umh->pool);
+-	#endif /* CONFIG_ION_MONITOR */
+ 	kfree(umh);
+ 	umh = NULL;
+ }
+@@ -363,110 +411,6 @@ static int __init rmem_unmapped_setup(struct reserved_mem *rmem)
+ 	}
+ }
+ 
+-#ifdef CONFIG_ION_MONITOR
+-/**
+- *  get_unmapped_heap_meta - get a metadata value
+- *  @heap: pointer to ion heap
+- *  @name: name of the metadata to read
+- *
+- *  returns the requested metadata value
+- */
+-size_t get_unmapped_heap_meta(struct ion_heap *heap, int name)
+-{
+-	struct ion_unmapped_heap *unmapped_heap = 
+-		container_of(heap, ion_unmapped_heap, heap);
+-	struct gen_pool_meta *meta = 
+-		container_of(unmapped_heap->pool, struct gen_pool_meta, pool);
+-	return get_meta(meta, name);
+-}
+-
+-/**
+- * get_meta - get a metadata value
+- * @meta: pointer to gen_pool_meta struct
+- * @name: name of the metadata to read
+- *
+- * returns the requested metadata value
+- */
+-static size_t get_meta(struct gen_pool_meta *meta, int name) 
+-{
+-	size_t size;
+-	switch(name) {
+-		case HEAP_SIZE:
+-			spin_lock(&meta->lock);
+-			size = meta->heap_size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case FREE_SIZE:
+-			spin_lock(&meta->lock);
+-			size = meta->free_size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case ALLOCATED_SIZE:
+-			spin_lock(&meta->lock);
+-			size = meta->allocated_size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case ALLOC_PEAK:
+-			spin_lock(&meta->lock);
+-			size = meta->alloc_peak;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case LARGEST_FREE_BUF:
+-			spin_lock(&meta->lock);
+-			size = meta->largest_free_buf;
+-			spin_unlock(&meta->lock);
+-			break;
+-		default:
+-			pr_err("%s: Invalid metadata name %d\n", __func__,
+-					name);
+-			return NULL;
+-	}
+-	return size;
+-}
+-
+-/**
+- * set_meta - set a metadata value
+- * @meta: pointer to gen_pool_meta struct
+- * @name: name of the metadata to modify
+- * @size: value to set to the metadata
+- *
+- */
+-static void set_meta(struct gen_pool_meta *meta, int name, size_t size) 
+-{
+-	switch(name) {
+-		case HEAP_SIZE:
+-			spin_lock(&meta->lock);
+-			meta->heap_size = size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case FREE_SIZE:
+-			spin_lock(&meta->lock);
+-			meta->free_size = size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case ALLOCATED_SIZE:
+-			spin_lock(&meta->lock);
+-			meta->allocated_size = size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case ALLOC_PEAK:
+-			spin_lock(&meta->lock);
+-			meta->alloc_peak = size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		case LARGEST_FREE_BUF:
+-			spin_lock(&meta->lock);
+-			meta->largest_free_buf = size;
+-			spin_unlock(&meta->lock);
+-			break;
+-		default:
+-			pr_err("%s: Invalid metadata name %d\n", __func__,
+-					name);
+-			return NULL;
+-	}
+-}
+-#endif /* CONFIG_ION_MONITOR */
+-
+ RESERVEDMEM_OF_DECLARE(unmapped, "imx-secure-ion-pool", rmem_unmapped_setup);
+ 
+ device_initcall(ion_add_unmapped_heap);
+diff --git a/include/linux/cma.h b/include/linux/cma.h
+index bf90f0bb42bd..589eab2c1ec8 100644
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -19,6 +19,12 @@
+ 
+ struct cma;
+ 
++#ifdef CONFIG_ION_MONITOR
++extern unsigned long cma_get_free_size(const struct cma *cma);
++extern unsigned long cma_get_largest_free_buf(const struct cma *cma);
++#endif /* CONFIG_ION_MONITOR */ 
++
++
+ extern unsigned long totalcma_pages;
+ extern phys_addr_t cma_get_base(const struct cma *cma);
+ extern unsigned long cma_get_size(const struct cma *cma);
+diff --git a/include/linux/genalloc.h b/include/linux/genalloc.h
+index 46ca4982e77f..8423c5512c7a 100644
+--- a/include/linux/genalloc.h
++++ b/include/linux/genalloc.h
+@@ -34,6 +34,7 @@
+ #include <linux/spinlock_types.h>
+ #include <linux/atomic.h>
+ 
++
+ struct device;
+ struct device_node;
+ struct gen_pool;
+@@ -67,22 +68,6 @@ struct gen_pool {
+ 	const char *name;
+ };
+ 
+-#ifdef CONFIG_ION_MONITOR
+-/*
+- *  Metadata for General purpose special memory pool descriptor.
+- */
+-struct gen_pool_meta { 
+-	spinlock_t lock;
+-	struct gen_pool pool;
+-	size_t heap_size;
+-	size_t free_size;
+-	size_t allocated_size;	
+-	size_t largest_free_buf;
+-	size_t alloc_peak;
+-	genpool_algo_t algo;
+-};
+-#endif /* CONFIG_ION_MONITOR
+-
+ /*
+  *  General purpose special memory pool chunk descriptor.
+  */
+@@ -95,6 +80,12 @@ struct gen_pool_chunk {
+ 	unsigned long bits[0];		/* bitmap for allocating memory chunk */
+ };
+ 
++#ifdef CONFIG_ION_MONITOR
++
++extern size_t gen_pool_largest_free_buf(struct gen_pool *pool);
++
++#endif /* CONFIG_ION_MONITOR
++
+ /*
+  *  gen_pool data descriptor for gen_pool_first_fit_align.
+  */
+diff --git a/lib/genalloc.c b/lib/genalloc.c
+index 0b32e964deda..0cdfdc7908f6 100644
+--- a/lib/genalloc.c
++++ b/lib/genalloc.c
+@@ -36,6 +36,7 @@
+ #include <linux/genalloc.h>
+ #include <linux/of_device.h>
+ 
++
+ static inline size_t chunk_size(const struct gen_pool_chunk *chunk)
+ {
+ 	return chunk->end_addr - chunk->start_addr + 1;
+@@ -168,38 +169,37 @@ EXPORT_SYMBOL(gen_pool_create);
+ 
+ #ifdef CONFIG_ION_MONITOR
+ /**
+- * gen_pool__meta_create - create a new special memory pool wrapped by a 
+- * metadata struct
+- * @min_alloc_order: log base 2 of number of bytes each bitmap bit represents
+- * @nid: node id of the node the pool structure should be allocated on, or -1
+- *
+- * Create a new special memory pool that can be used to manage special purpose
+- * memory not managed by the regular kmalloc/kfree interface.
+- * Also creates metadata structure.
++ * gen_pool_largest_free_buf - 
++ * @pool: pointer to gen_pool
++ * 
++ * Returns largest free buffer in the pool 
+  */
+-struct gen_pool *gen_pool_meta_create(int min_alloc_order, int nid)
++size_t gen_pool_largest_free_buf(struct gen_pool *pool) 
+ {
+-	struct gen_pool_meta *meta;
+-
+-	meta = kmalloc_node(sizeof(struct gen_pool), GFP_KERNEL, nid);
+-	if (meta != NULL) {
+-		spin_lock_init(&meta->lock);
+-		spin_lock_init(&(meta->pool.lock));
+-		INIT_LIST_HEAD(&(meta->pool.chunks));
+-		meta->pool.min_alloc_order = min_alloc_order;
+-		meta->pool.algo = gen_pool_first_fit;
+-		meta->pool.data = NULL;
+-		meta->pool.name = NULL;
+-		meta->alloc_peak = 0;
+-		meta->allocated_size = 0;
+-	}
+-	else 
+-	{
+-		return ERR_PTR(-ENOMEM);
++	struct gen_pool_chunk *chunk;
++	int order = pool->min_alloc_order;
++	unsigned long *map;
++	unsigned long largest_free_buf;
++	unsigned long bitmap_size;
++	unsigned long buf_size, next_free_buf, next_allocated_buf;
++	largest_free_buf = 0;
++	rcu_read_lock();
++	list_for_each_entry_rcu(chunk, &pool->chunks, next_chunk) {
++		bitmap_size = chunk_size(chunk) >> order;
++		map = chunk->bits;
++		next_free_buf = find_next_zero_bit(map, bitmap_size, 0);
++		while(next_free_buf < bitmap_size) {
++			next_allocated_buf = find_next_bit(map, bitmap_size, next_free_buf);
++			buf_size = next_allocated_buf - next_free_buf;
++			if(buf_size > largest_free_buf) largest_free_buf = buf_size;
++			next_free_buf = find_next_zero_bit(map, bitmap_size, next_allocated_buf);
++		}
+ 	}
+-	return &meta->pool;
++	rcu_read_unlock();
++	return largest_free_buf << order;
+ }
+-EXPORT_SYMBOL(gen_pool_meta_create);
++EXPORT_SYMBOL(gen_pool_largest_free_buf);
++
+ #endif /* CONFIG_ION_MONITOR */ 
+ 
+ 
+@@ -295,37 +295,6 @@ void gen_pool_destroy(struct gen_pool *pool)
+ }
+ EXPORT_SYMBOL(gen_pool_destroy);
+ 
+-#ifdef CONFIG_ION_MONITOR
+-/**
+- * gen_pool_meta_destroy - destroy a special memory pool and its metadata
+- * @meta: pool's metadata structure to destroy
+- *
+- * Destroy the specified special memory pool and its metadata. 
+- * Verifies that there are no outstanding allocations.
+- */
+-void gen_pool_meta_destroy(struct gen_pool_meta *meta)
+-{
+-	struct list_head *_chunk, *_next_chunk;
+-	struct gen_pool_chunk *chunk;
+-	int order = meta->pool.min_alloc_order;
+-	int bit, end_bit;
+-
+-	list_for_each_safe(_chunk, _next_chunk, &meta->pool.chunks) {
+-		chunk = list_entry(_chunk, struct gen_pool_chunk, next_chunk);
+-		list_del(&chunk->next_chunk);
+-
+-		end_bit = chunk_size(chunk) >> order;
+-		bit = find_next_bit(chunk->bits, end_bit, 0);
+-		BUG_ON(bit < end_bit);
+-
+-		kfree(chunk);
+-	}
+-	kfree_const(meta->pool.name);
+-	kfree(meta);
+-}
+-EXPORT_SYMBOL(gen_pool_meta_destroy);
+-#endif /* CONFIG_ION_MONITOR
+-
+ /**
+  * gen_pool_alloc - allocate special memory from the pool
+  * @pool: pool to allocate from
+diff --git a/mm/cma.c b/mm/cma.c
+index 022e52bd8370..273c3bb0dfc8 100644
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -53,6 +53,49 @@ unsigned long cma_get_size(const struct cma *cma)
+ 	return cma->count << PAGE_SHIFT;
+ }
+ 
++#ifdef CONFIG_ION_MONITOR
++unsigned long cma_get_free_size(const struct cma *cma)
++{
++	unsigned long next_zero_bit, next_set_bit;
++	unsigned long start = 0;
++	unsigned long free_size = 0;
++
++	mutex_lock(&cma->lock);
++	for (;;) {
++		next_zero_bit = find_next_zero_bit(cma->bitmap, cma->count, start);
++		if (next_zero_bit >= cma->count)
++			break;
++		next_set_bit = find_next_bit(cma->bitmap, cma->count, next_zero_bit);
++		free_size += next_set_bit - next_zero_bit;
++		start = next_set_bit;
++	}
++	mutex_unlock(&cma->lock);
++	return free_size << PAGE_SHIFT;
++}
++
++unsigned long cma_get_largest_free_buf(const struct cma *cma)
++{
++	unsigned long next_zero_bit, next_set_bit;
++	unsigned long start = 0;
++	unsigned long free_size = 0;
++	unsigned long largest_free_buf = 0;
++
++	mutex_lock(&cma->lock);
++	for (;;) {
++		next_zero_bit = find_next_zero_bit(cma->bitmap, cma->count, start);
++		if (next_zero_bit >= cma->count)
++			break;
++		next_set_bit = find_next_bit(cma->bitmap, cma->count, next_zero_bit);
++		free_size = next_set_bit - next_zero_bit;
++		if(free_size > largest_free_buf) largest_free_buf = free_size;
++		start = next_set_bit;
++	}
++	mutex_unlock(&cma->lock);
++	return largest_free_buf << PAGE_SHIFT;
++}
++
++#endif /* CONFIG_ION_MONITOR */
++
+ const char *cma_get_name(const struct cma *cma)
+ {
+ 	return cma->name ? cma->name : "(undefined)";
+-- 
+2.17.1
+

@@ -1,0 +1,84 @@
+From 47869596d8e3755c2119a322d660cea4eb2cdf6a Mon Sep 17 00:00:00 2001
+From: Shijie Qin <shijie.qin@nxp.com>
+Date: Thu, 4 Jul 2019 19:27:51 +0800
+Subject: [PATCH 12/52] MLK-22195 VPU Decoder: ensure when framework update
+ seqinfo which not be changed
+
+FW maybe quickly parse twice different sequence header and report
+seq_hdr_found event, need to ensure when frame update seqinfo which not
+be changed
+
+Signed-off-by: Shijie Qin <shijie.qin@nxp.com>
+Reviewed-by: ming_qian <ming.qian@nxp.com>
+---
+ drivers/mxc/vpu_malone/vpu_b0.c | 33 ++++++++++++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/mxc/vpu_malone/vpu_b0.c b/drivers/mxc/vpu_malone/vpu_b0.c
+index b4000862e58f..f4a0b17ed71a 100644
+--- a/drivers/mxc/vpu_malone/vpu_b0.c
++++ b/drivers/mxc/vpu_malone/vpu_b0.c
+@@ -3695,16 +3695,35 @@ static bool alloc_frame_buffer(struct vpu_ctx *ctx,
+ 		"VID_API_CMD_FS_ALLOC, ctx[%d] vb2_buf=%p, id=%d\n",
+ 		ctx->str_index, p_data_req->vb2_buf, p_data_req->id);
+ 
+-	if (ctx->wait_res_change_done)
+-		ctx->wait_res_change_done = false;
+-
+ 	return true;
+ }
+ 
++static void check_wait_res_changed(struct vpu_ctx *ctx)
++{
++	struct queue_data *q_data = &ctx->q_data[V4L2_DST];
++	struct vb2_data_req *p_data_req;
++	struct vb2_data_req *p_temp;
++
++	if (!q_data->enable)
++		return;
++
++	list_for_each_entry_safe(p_data_req, p_temp, &q_data->drv_q, list) {
++		if (!p_data_req->vb2_buf)
++			continue;
++		if (verify_frame_buffer_size(q_data, p_data_req)) {
++			ctx->wait_res_change_done = false;
++			break;
++		}
++	}
++}
++
+ static void respond_req_frame(struct vpu_ctx *ctx,
+ 				struct queue_data *queue,
+ 				bool abnormal)
+ {
++	if (ctx->wait_res_change_done)
++		check_wait_res_changed(ctx);
++
+ 	while (ctx->req_frame_count > 0) {
+ 		if (abnormal) {
+ 			respond_req_frame_abnormal(ctx);
+@@ -3910,6 +3929,7 @@ static void vpu_api_event_handler(struct vpu_ctx *ctx, u_int32 uStrIdx, u_int32
+ //		MediaIPFW_Video_FrameBuffer *pStreamDCPBuffer = &pSharedInterface->StreamDCPBuffer[uStrIdx];
+ 		MediaIPFW_Video_PitchInfo   *pStreamPitchInfo = &pSharedInterface->StreamPitchInfo[uStrIdx];
+ 		unsigned int num = pSharedInterface->SeqInfoTabDesc.uNumSizeDescriptors;
++		int wait_times = 0;
+ 
+ 		if (!check_seq_info_is_valid(ctx->str_index, pSeqInfo))
+ 			break;
+@@ -3921,6 +3941,13 @@ static void vpu_api_event_handler(struct vpu_ctx *ctx, u_int32 uStrIdx, u_int32
+ 		}
+ 		else
+ 			vpu_dbg(LVL_INFO, "pSeqinfo is not NULL, need not to realloc\n");
++
++		while (ctx->wait_res_change_done && wait_times++ < 100)
++			mdelay(10);
++		if (ctx->wait_res_change_done)
++			vpu_dbg(LVL_WARN, "warning: ctx[%d] update seq info when waiting res change\n",
++				ctx->str_index);
++
+ 		down(&ctx->q_data[V4L2_DST].drv_q_lock);
+ 		respond_req_frame(ctx, &ctx->q_data[V4L2_DST], true);
+ 		memcpy(ctx->pSeqinfo, &pSeqInfo[ctx->str_index], sizeof(MediaIPFW_Video_SeqInfo));
+-- 
+2.17.1
+
