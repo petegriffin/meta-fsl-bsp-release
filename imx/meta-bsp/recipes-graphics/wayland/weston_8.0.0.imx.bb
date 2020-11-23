@@ -123,6 +123,7 @@ do_install_append() {
             		uncomment "gbm-format=argb8888" weston.ini
             		uncomment "\\[shell\\]"         weston.ini
             		uncomment "size=1920x1080"      weston.ini
+			uncomment "mode=1920x1080@60"   weston.ini
             		;;
         	8mm)
             		uncomment "use-g2d=1"           weston.ini
